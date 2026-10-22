@@ -304,10 +304,12 @@ st.caption("纯分析工具 · 不连接交易接口 · 所有操作需手动执
 
 with st.form("input_form"):
     col1, col2 = st.columns(2)
-    code = col1.text_input("股票代码", "601066")
-    buy_price = col1.number_input("买入价", value=23.00, step=0.01)
-    qty = col2.number_input("数量（股）", value=100, step=100)
-    buy_date = col2.date_input("买入日期", value=date(2026, 10, 15))
+    code = col1.text_input("股票代码", "")
+    buy_price = col1.number_input("买入价", value=None, step=0.01,
+                                  format="%.2f", placeholder="如 23.00")
+    qty = col2.number_input("数量（股）", value=None, step=100,
+                            placeholder="如 100")
+    buy_date = col2.date_input("买入日期", value=None)
 
     st.markdown("**账户权限（手动勾选）**")
     c1, c2 = st.columns(2)
@@ -317,64 +319,71 @@ with st.form("input_form"):
     submitted = st.form_submit_button("开始分析")
 
 if submitted:
-    try:
-        stock_df = add_indicators(fetch_stock_daily(code))
-        index_df = fetch_index_daily()
-        rt = fetch_realtime(code)
+    # 必填校验：代码、买入价、数量三项缺一不可
+    if not code.strip() or buy_price is None or qty is None:
+        st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
+    else:
+        try:
+            code = code.strip()
+            qty = int(qty)
 
-        # 现价优先用实时接口，拿不到就用日线最后一根收盘价
-        price = rt.get("price", stock_df["close"].iloc[-1])
-        name = rt.get("name", code)
-        beta = calc_beta(stock_df, index_df)
+            stock_df = add_indicators(fetch_stock_daily(code))
+            index_df = fetch_index_daily()
+            rt = fetch_realtime(code)
 
-        # 300ETF 现价（用于名义价值估算，可后续替换为实时接口）
-        etf_price = 4.0
+            # 现价优先用实时接口，拿不到就用日线最后一根收盘价
+            price = rt.get("price", stock_df["close"].iloc[-1])
+            name = rt.get("name", code)
+            beta = calc_beta(stock_df, index_df)
 
-        market_value = price * qty
-        pnl = (price - buy_price) * qty
+            # 300ETF 现价（用于名义价值估算，可后续替换为实时接口）
+            etf_price = 4.0
 
-        trend = run_trend_engine(stock_df, index_df, pe_pct=None)
-        hedge = match_hedge(trend["rating"], market_value, qty, beta,
-                            etf_price, has_margin, has_option)
+            market_value = price * qty
+            pnl = (price - buy_price) * qty
 
-        # ---- 输出报告 ----
-        st.subheader("【持仓概览】")
-        st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
-                 f"{qty}股 | 市值 {market_value:.0f}元 | "
-                 f"浮盈亏 {pnl:+.0f}元")
+            trend = run_trend_engine(stock_df, index_df, pe_pct=None)
+            hedge = match_hedge(trend["rating"], market_value, qty, beta,
+                                etf_price, has_margin, has_option)
 
-        # ---- 趋势判断：中文表格 ----
-        st.subheader(f"【趋势判断】{trend['rating']}（加权得分 {trend['total']}）")
+            # ---- 输出报告 ----
+            st.subheader("【持仓概览】")
+            st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
+                     f"{qty}股 | 市值 {market_value:.0f}元 | "
+                     f"浮盈亏 {pnl:+.0f}元")
 
-        SCORE_LABELS = {
-            "ma":        ("均线系统", 0.25),
-            "macd":      ("MACD动能", 0.20),
-            "relative":  ("相对强弱", 0.20),
-            "volume":    ("量能",     0.15),
-            "valuation": ("估值分位", 0.20),
-        }
+            # ---- 趋势判断：中文表格 ----
+            st.subheader(f"【趋势判断】{trend['rating']}（加权得分 {trend['total']}）")
 
-        score_rows = []
-        for key, (label, weight) in SCORE_LABELS.items():
-            raw = trend["scores"][key]
-            score_rows.append({
-                "维度": label,
-                "得分": raw,
-                "权重": f"{int(weight * 100)}%",
-                "加权分": round(raw * weight, 2),
-            })
-        st.table(pd.DataFrame(score_rows))
+            SCORE_LABELS = {
+                "ma":        ("均线系统", 0.25),
+                "macd":      ("MACD动能", 0.20),
+                "relative":  ("相对强弱", 0.20),
+                "volume":    ("量能",     0.15),
+                "valuation": ("估值分位", 0.20),
+            }
 
-        st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
-                 f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
+            score_rows = []
+            for key, (label, weight) in SCORE_LABELS.items():
+                raw = trend["scores"][key]
+                score_rows.append({
+                    "维度": label,
+                    "得分": raw,
+                    "权重": f"{int(weight * 100)}%",
+                    "加权分": round(raw * weight, 2),
+                })
+            st.table(pd.DataFrame(score_rows))
 
-        st.subheader("【工具匹配】")
-        st.info(f"**{hedge['tool']}** — {hedge['detail']}")
-        st.write(f"建议数量：**{hedge['qty']}**")
-        st.write(f"成本提示：{hedge['cost_note']}")
+            st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
+                     f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
 
-        st.subheader("【手动执行提示】")
-        st.warning("请在券商App中手动完成上述操作；本工具不发送任何委托。")
+            st.subheader("【工具匹配】")
+            st.info(f"**{hedge['tool']}** — {hedge['detail']}")
+            st.write(f"建议数量：**{hedge['qty']}**")
+            st.write(f"成本提示：{hedge['cost_note']}")
 
-    except Exception as e:
-        st.error(f"数据获取或计算失败：{e}")
+            st.subheader("【手动执行提示】")
+            st.warning("请在券商App中手动完成上述操作；本工具不发送任何委托。")
+
+        except Exception as e:
+            st.error(f"数据获取或计算失败：{e}")
