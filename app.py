@@ -3,39 +3,75 @@ import akshare as ak
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
+import time
+from requests.exceptions import ConnectionError, Timeout
 
 # ============================================================
 # 模块二：数据层
 # ============================================================
 
+def fetch_with_retry(func, *args, retries=3, delay=2, **kwargs):
+    """通用的重试函数：捕获连接类异常，失败后等待 delay 秒重试"""
+    for i in range(retries):
+        try:
+            return func(*args, **kwargs)
+        except (ConnectionError, Timeout) as e:
+            if i == retries - 1:
+                raise e
+            print(f"请求失败，{delay}秒后重试 ({i+1}/{retries})...")
+            time.sleep(delay)
+    return None
+
+
 @st.cache_data(ttl=1800)
 def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
-    """前复权日线，返回最近 days 根K线"""
+    """前复权日线，带重试机制"""
     end = datetime.today().strftime("%Y%m%d")
     start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
-    df = ak.stock_zh_a_hist(symbol=code, period="daily",
-                            start_date=start, end_date=end, adjust="qfq")
+
+    df = fetch_with_retry(
+        ak.stock_zh_a_hist,
+        symbol=code, period="daily",
+        start_date=start, end_date=end, adjust="qfq"
+    )
+
+    if df is None or df.empty:
+        raise ValueError("获取股票历史数据失败，请稍后重试")
+
     df = df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close",
                             "最高": "high", "最低": "low", "成交量": "volume",
                             "涨跌幅": "pct_chg"})
     df["date"] = pd.to_datetime(df["date"])
     return df.sort_values("date").reset_index(drop=True)
 
+
 @st.cache_data(ttl=1800)
 def fetch_index_daily(symbol: str = "sh000300", days: int = 250) -> pd.DataFrame:
-    df = ak.stock_zh_index_daily(symbol=symbol)
+    """沪深300指数日线，带重试机制"""
+    df = fetch_with_retry(ak.stock_zh_index_daily, symbol=symbol)
+
+    if df is None or df.empty:
+        raise ValueError("获取指数数据失败，请稍后重试")
+
     df["date"] = pd.to_datetime(df["date"])
     return df.tail(days).reset_index(drop=True)
 
+
 @st.cache_data(ttl=600)
 def fetch_realtime(code: str) -> dict:
-    spot = ak.stock_zh_a_spot_em()
+    """实时快照，带重试机制"""
+    spot = fetch_with_retry(ak.stock_zh_a_spot_em)
+
+    if spot is None or spot.empty:
+        return {}
+
     row = spot[spot["代码"] == code]
     if row.empty:
         return {}
     r = row.iloc[0]
     return {"price": float(r["最新价"]), "name": r["名称"],
             "pct": float(r["涨跌幅"])}
+
 
 # ============================================================
 # 指标层
@@ -56,6 +92,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     return df
 
+
 def calc_beta(stock_df: pd.DataFrame, index_df: pd.DataFrame,
               window: int = 90) -> float:
     """个股 vs 沪深300 的 Beta，用日收益率线性回归斜率"""
@@ -66,6 +103,7 @@ def calc_beta(stock_df: pd.DataFrame, index_df: pd.DataFrame,
         return 1.0
     cov = np.cov(joined["s"], joined["i"])
     return float(cov[0, 1] / cov[1, 1]) if cov[1, 1] != 0 else 1.0
+
 
 # ============================================================
 # 趋势打分引擎（模块三）
@@ -88,6 +126,7 @@ def score_ma(df: pd.DataFrame) -> int:
         return -2
     return 0
 
+
 def score_macd(df: pd.DataFrame) -> int:
     r, p = df.iloc[-1], df.iloc[-2]
     dif, dea, hist = r["dif"], r["dea"], r["macd_hist"]
@@ -104,6 +143,7 @@ def score_macd(df: pd.DataFrame) -> int:
         return -2  # 零轴下死叉
     return 0
 
+
 def score_relative(stock_df, index_df) -> int:
     s20 = stock_df["close"].iloc[-1] / stock_df["close"].iloc[-21] - 1
     i20 = index_df["close"].iloc[-1] / index_df["close"].iloc[-21] - 1
@@ -116,6 +156,7 @@ def score_relative(stock_df, index_df) -> int:
         return -1
     return -2
 
+
 def score_volume(df: pd.DataFrame) -> int:
     r = df.iloc[-1]
     if pd.isna(r["vol_ma5"]):
@@ -126,6 +167,7 @@ def score_volume(df: pd.DataFrame) -> int:
     if ratio < 0.8 and r["pct_chg"] < 0:
         return -1
     return 0
+
 
 def score_valuation(pe_pct: float | None) -> int:
     """pe_pct: 当前PE在历史中的分位（0-1）。无数据返回0"""
@@ -141,8 +183,10 @@ def score_valuation(pe_pct: float | None) -> int:
         return -1
     return -2
 
+
 WEIGHTS = {"ma": 0.25, "macd": 0.20, "relative": 0.20,
            "volume": 0.15, "valuation": 0.20}
+
 
 def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
     scores = {
@@ -173,6 +217,7 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
     return {"scores": scores, "total": round(total, 2), "rating": rating,
             "support": round(support, 2), "resistance": round(resistance, 2),
             "pivot": round(pivot, 2)}
+
 
 # ============================================================
 # 工具匹配与数量计算（模块四、五）
@@ -229,6 +274,7 @@ def match_hedge(rating: str, market_value: float, qty: int,
                 "cost_note": "权利金"}
     return {"tool": "无需对冲", "qty": 0,
             "detail": "设置移动止盈/止损提醒即可", "cost_note": "无"}
+
 
 # ============================================================
 # 主界面与报告输出（模块六）
