@@ -7,11 +7,11 @@ import time
 from requests.exceptions import ConnectionError, Timeout
 
 # ============================================================
-# 模块二：数据层
+# 模块二：数据层（新浪财经数据源）
 # ============================================================
 
 def fetch_with_retry(func, *args, retries=3, delay=2, **kwargs):
-    """通用的重试函数：捕获连接类异常，失败后等待 delay 秒重试"""
+    """通用重试函数：捕获连接类异常，失败后等待 delay 秒重试"""
     for i in range(retries):
         try:
             return func(*args, **kwargs)
@@ -23,31 +23,42 @@ def fetch_with_retry(func, *args, retries=3, delay=2, **kwargs):
     return None
 
 
+def _to_sina_symbol(code: str) -> str:
+    """把6位代码转成新浪接口需要的带前缀格式"""
+    if code.startswith(('6', '5', '9')):
+        return f"sh{code}"
+    return f"sz{code}"
+
+
 @st.cache_data(ttl=1800)
 def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
-    """前复权日线，带重试机制"""
+    """新浪财经接口获取前复权日线，带重试"""
+    symbol = _to_sina_symbol(code)
     end = datetime.today().strftime("%Y%m%d")
     start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
 
     df = fetch_with_retry(
-        ak.stock_zh_a_hist,
-        symbol=code, period="daily",
-        start_date=start, end_date=end, adjust="qfq"
+        ak.stock_zh_a_daily,
+        symbol=symbol, start_date=start, end_date=end, adjust="qfq"
     )
 
     if df is None or df.empty:
-        raise ValueError("获取股票历史数据失败，请稍后重试")
+        raise ValueError("获取股票历史数据失败（新浪接口），请稍后重试")
 
-    df = df.rename(columns={"日期": "date", "开盘": "open", "收盘": "close",
-                            "最高": "high", "最低": "low", "成交量": "volume",
-                            "涨跌幅": "pct_chg"})
+    # 新浪接口列名：date, open, high, low, close, volume, amount, ...
+    df = df.rename(columns={
+        "date": "date", "open": "open", "close": "close",
+        "high": "high", "low": "low", "volume": "volume",
+    })
     df["date"] = pd.to_datetime(df["date"])
+    # 新浪接口没有涨跌幅字段，手动计算
+    df["pct_chg"] = df["close"].pct_change() * 100
     return df.sort_values("date").reset_index(drop=True)
 
 
 @st.cache_data(ttl=1800)
 def fetch_index_daily(symbol: str = "sh000300", days: int = 250) -> pd.DataFrame:
-    """沪深300指数日线，带重试机制"""
+    """沪深300指数日线（stock_zh_index_daily 本身就是新浪源），带重试"""
     df = fetch_with_retry(ak.stock_zh_index_daily, symbol=symbol)
 
     if df is None or df.empty:
@@ -59,18 +70,23 @@ def fetch_index_daily(symbol: str = "sh000300", days: int = 250) -> pd.DataFrame
 
 @st.cache_data(ttl=600)
 def fetch_realtime(code: str) -> dict:
-    """实时快照，带重试机制"""
-    spot = fetch_with_retry(ak.stock_zh_a_spot_em)
-
-    if spot is None or spot.empty:
+    """
+    实时报价：优先用新浪全市场快照，失败则返回空字典。
+    返回空时主流程会自动降级用日线最后一根收盘价。
+    """
+    try:
+        spot = fetch_with_retry(ak.stock_zh_a_spot, retries=2, delay=1)
+        if spot is None or spot.empty:
+            return {}
+        # 新浪 spot 的代码列可能带 sh/sz 前缀，两种都匹配
+        raw = spot[spot["代码"].astype(str).str.replace(r"^(sh|sz)", "", regex=True) == code]
+        if raw.empty:
+            return {}
+        r = raw.iloc[0]
+        return {"price": float(r["最新价"]), "name": r["名称"],
+                "pct": float(r["涨跌幅"]) if "涨跌幅" in r else 0.0}
+    except Exception:
         return {}
-
-    row = spot[spot["代码"] == code]
-    if row.empty:
-        return {}
-    r = row.iloc[0]
-    return {"price": float(r["最新价"]), "name": r["名称"],
-            "pct": float(r["涨跌幅"])}
 
 
 # ============================================================
@@ -145,6 +161,8 @@ def score_macd(df: pd.DataFrame) -> int:
 
 
 def score_relative(stock_df, index_df) -> int:
+    if len(stock_df) < 21 or len(index_df) < 21:
+        return 0
     s20 = stock_df["close"].iloc[-1] / stock_df["close"].iloc[-21] - 1
     i20 = index_df["close"].iloc[-1] / index_df["close"].iloc[-21] - 1
     diff = (s20 - i20) * 100
@@ -159,7 +177,7 @@ def score_relative(stock_df, index_df) -> int:
 
 def score_volume(df: pd.DataFrame) -> int:
     r = df.iloc[-1]
-    if pd.isna(r["vol_ma5"]):
+    if pd.isna(r["vol_ma5"]) or r["vol_ma5"] == 0:
         return 0
     ratio = r["volume"] / r["vol_ma5"]
     if ratio > 1.2 and r["pct_chg"] > 0:
@@ -303,11 +321,13 @@ if submitted:
         stock_df = add_indicators(fetch_stock_daily(code))
         index_df = fetch_index_daily()
         rt = fetch_realtime(code)
+
+        # 现价优先用实时接口，拿不到就用日线最后一根收盘价
         price = rt.get("price", stock_df["close"].iloc[-1])
         name = rt.get("name", code)
         beta = calc_beta(stock_df, index_df)
 
-        # 300ETF 现价（用于名义价值，示例用固定值，可替换为实时接口）
+        # 300ETF 现价（用于名义价值估算，可后续替换为实时接口）
         etf_price = 4.0
 
         market_value = price * qty
