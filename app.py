@@ -343,10 +343,30 @@ if submitted:
                  f"{qty}股 | 市值 {market_value:.0f}元 | "
                  f"浮盈亏 {pnl:+.0f}元")
 
-        st.subheader(f"【趋势判断】{trend['rating']}（得分 {trend['total']}）")
-        st.json(trend["scores"])
-        st.write(f"支撑 {trend['support']} | 压力 {trend['resistance']} | "
-                 f"多空分界 {trend['pivot']} | Beta {beta:.2f}")
+        # ---- 趋势判断：中文表格 ----
+        st.subheader(f"【趋势判断】{trend['rating']}（加权得分 {trend['total']}）")
+
+        SCORE_LABELS = {
+            "ma":        ("均线系统", 0.25),
+            "macd":      ("MACD动能", 0.20),
+            "relative":  ("相对强弱", 0.20),
+            "volume":    ("量能",     0.15),
+            "valuation": ("估值分位", 0.20),
+        }
+
+        score_rows = []
+        for key, (label, weight) in SCORE_LABELS.items():
+            raw = trend["scores"][key]
+            score_rows.append({
+                "维度": label,
+                "得分": raw,
+                "权重": f"{int(weight * 100)}%",
+                "加权分": round(raw * weight, 2),
+            })
+        st.table(pd.DataFrame(score_rows))
+
+        st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
+                 f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
 
         st.subheader("【工具匹配】")
         st.info(f"**{hedge['tool']}** — {hedge['detail']}")
