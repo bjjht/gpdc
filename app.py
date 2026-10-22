@@ -45,13 +45,11 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
     if df is None or df.empty:
         raise ValueError("获取股票历史数据失败（新浪接口），请稍后重试")
 
-    # 新浪接口列名：date, open, high, low, close, volume, amount, ...
     df = df.rename(columns={
         "date": "date", "open": "open", "close": "close",
         "high": "high", "low": "low", "volume": "volume",
     })
     df["date"] = pd.to_datetime(df["date"])
-    # 新浪接口没有涨跌幅字段，手动计算
     df["pct_chg"] = df["close"].pct_change() * 100
     return df.sort_values("date").reset_index(drop=True)
 
@@ -78,7 +76,6 @@ def fetch_realtime(code: str) -> dict:
         spot = fetch_with_retry(ak.stock_zh_a_spot, retries=2, delay=1)
         if spot is None or spot.empty:
             return {}
-        # 新浪 spot 的代码列可能带 sh/sz 前缀，两种都匹配
         raw = spot[spot["代码"].astype(str).str.replace(r"^(sh|sz)", "", regex=True) == code]
         if raw.empty:
             return {}
@@ -98,13 +95,11 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ma5"]  = df["close"].rolling(5).mean()
     df["ma20"] = df["close"].rolling(20).mean()
     df["ma60"] = df["close"].rolling(60).mean()
-    # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["dif"] = ema12 - ema26
     df["dea"] = df["dif"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = (df["dif"] - df["dea"]) * 2
-    # 量比（5日均量）
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     return df
 
@@ -152,11 +147,11 @@ def score_macd(df: pd.DataFrame) -> int:
     if dif > dea and hist < p_hist:
         return 1
     if dif < dea and hist > p_hist:
-        return 0   # 负柱收窄
+        return 0
     if dif < dea and hist < p_hist:
         return -1
     if dif < 0 and dif < dea and p["dif"] > p["dea"]:
-        return -2  # 零轴下死叉
+        return -2
     return 0
 
 
@@ -188,7 +183,6 @@ def score_volume(df: pd.DataFrame) -> int:
 
 
 def score_valuation(pe_pct: float | None) -> int:
-    """pe_pct: 当前PE在历史中的分位（0-1）。无数据返回0"""
     if pe_pct is None:
         return 0
     if pe_pct < 0.20:
@@ -226,7 +220,6 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
     else:
         rating = "偏空"
 
-    # 关键价位
     recent = stock_df.tail(60)
     support = min(recent["low"].min(), stock_df["ma60"].iloc[-1])
     resistance = max(recent["high"].max(), stock_df["ma20"].iloc[-1])
@@ -244,21 +237,15 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 def match_hedge(rating: str, market_value: float, qty: int,
                 beta: float, etf_price: float,
                 has_margin: bool, has_option: bool) -> dict:
-    """
-    返回 {"tool": ..., "qty": ..., "detail": ..., "cost_note": ...}
-    etf_price: 300ETF 现价，用于计算单张名义价值
-    """
-    contract_notional = etf_price * 10000          # 单张ETF期权名义价值
+    contract_notional = etf_price * 10000
     equiv = market_value * beta / contract_notional if contract_notional else 0
-    equiv_int = int(equiv)                         # 向下取整
+    equiv_int = int(equiv)
 
-    # 1) 规模过小
     if market_value < 2000:
         return {"tool": "仓位管理", "qty": 0,
                 "detail": f"市值{market_value:.0f}元低于衍生品有效门槛",
                 "cost_note": "无额外成本"}
 
-    # 2) 偏空 / 中性偏空
     if rating in ("偏空", "中性偏空"):
         if has_margin and qty >= 200:
             short_qty = 100 if rating == "中性偏空" else min(200, (qty // 100 - 1) * 100)
@@ -273,7 +260,6 @@ def match_hedge(rating: str, market_value: float, qty: int,
                 "detail": "无可用衍生品权限或规模不足，建议止损/减仓",
                 "cost_note": "无额外成本"}
 
-    # 3) 震荡
     if rating == "震荡":
         if has_option and equiv_int >= 1:
             return {"tool": "买入轻度虚值认沽", "qty": equiv_int,
@@ -285,7 +271,6 @@ def match_hedge(rating: str, market_value: float, qty: int,
         return {"tool": "持有观望", "qty": 0,
                 "detail": "设置止损提醒，不建对冲仓", "cost_note": "无"}
 
-    # 4) 中性偏多 / 偏多
     if has_option and equiv_int >= 1 and rating == "中性偏多":
         return {"tool": "可选保护性认沽", "qty": equiv_int,
                 "detail": f"成本可控时买{equiv_int}张作保险",
@@ -302,24 +287,20 @@ st.set_page_config(page_title="对冲分析助手", layout="centered")
 st.title("📊 持仓对冲分析助手")
 st.caption("纯分析工具 · 不连接交易接口 · 所有操作需手动执行")
 
-with st.form("input_form"):
-    col1, col2 = st.columns(2)
-    code = col1.text_input("股票代码", "")
-    buy_price = col1.number_input("买入价", value=None, step=0.01,
-                                  format="%.2f", placeholder="如 23.00")
-    qty = col2.number_input("数量（股）", value=None, step=100,
-                            placeholder="如 100")
-    buy_date = col2.date_input("买入日期", value=None)
+col1, col2 = st.columns(2)
+code = col1.text_input("股票代码", "")
+buy_price = col1.number_input("买入价", value=None, step=0.01,
+                              format="%.2f", placeholder="如 23.00")
+qty = col2.number_input("数量（股）", value=None, step=100,
+                        placeholder="如 100")
+buy_date = col2.date_input("买入日期", value=None)
 
-    st.markdown("**账户权限（手动勾选）**")
-    c1, c2 = st.columns(2)
-    has_margin = c1.checkbox("已开通两融账户")
-    has_option = c2.checkbox("已开通ETF期权账户")
+st.markdown("**账户权限（手动勾选）**")
+c1, c2 = st.columns(2)
+has_margin = c1.checkbox("已开通两融账户")
+has_option = c2.checkbox("已开通ETF期权账户")
 
-    submitted = st.form_submit_button("开始分析")
-
-if submitted:
-    # 必填校验：代码、买入价、数量三项缺一不可
+if st.button("开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
@@ -331,14 +312,11 @@ if submitted:
             index_df = fetch_index_daily()
             rt = fetch_realtime(code)
 
-            # 现价优先用实时接口，拿不到就用日线最后一根收盘价
             price = rt.get("price", stock_df["close"].iloc[-1])
             name = rt.get("name", code)
             beta = calc_beta(stock_df, index_df)
 
-            # 300ETF 现价（用于名义价值估算，可后续替换为实时接口）
             etf_price = 4.0
-
             market_value = price * qty
             pnl = (price - buy_price) * qty
 
@@ -346,13 +324,11 @@ if submitted:
             hedge = match_hedge(trend["rating"], market_value, qty, beta,
                                 etf_price, has_margin, has_option)
 
-            # ---- 输出报告 ----
             st.subheader("【持仓概览】")
             st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
                      f"{qty}股 | 市值 {market_value:.0f}元 | "
                      f"浮盈亏 {pnl:+.0f}元")
 
-            # ---- 趋势判断：中文表格 ----
             st.subheader(f"【趋势判断】{trend['rating']}（加权得分 {trend['total']}）")
 
             SCORE_LABELS = {
@@ -379,7 +355,6 @@ if submitted:
 
             st.subheader("【工具匹配】")
             st.info(f"**{hedge['tool']}** — {hedge['detail']}")
-            st.write(f"建议数量：**{hedge['qty']}**")
             st.write(f"成本提示：{hedge['cost_note']}")
 
             st.subheader("【手动执行提示】")
