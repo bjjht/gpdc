@@ -66,52 +66,79 @@ def calc_beta(stock_df: pd.DataFrame, index_df: pd.DataFrame,
         return 1.0
     cov = np.cov(joined["s"], joined["i"])
     return float(cov[0, 1] / cov[1, 1]) if cov[1, 1] != 0 else 1.0
-                  def score_ma(df: pd.DataFrame) -> int:
+
+# ============================================================
+# 趋势打分引擎（模块三）
+# ============================================================
+
+def score_ma(df: pd.DataFrame) -> int:
     r = df.iloc[-1]
     c, m5, m20, m60 = r["close"], r["ma5"], r["ma20"], r["ma60"]
-    if pd.isna(m60): return 0
-    if c > m5 > m20 > m60:   return 2
-    if c > m20 and m5 < m20: return 1
-    if c < m20 and c > m60:  return 0
-    if c < m20 and m5 < m20 < m60: return -1
-    if c < m60:              return -2
+    if pd.isna(m60):
+        return 0
+    if c > m5 > m20 > m60:
+        return 2
+    if c > m20 and m5 < m20:
+        return 1
+    if c < m20 and c > m60:
+        return 0
+    if c < m20 and m5 < m20 < m60:
+        return -1
+    if c < m60:
+        return -2
     return 0
 
 def score_macd(df: pd.DataFrame) -> int:
     r, p = df.iloc[-1], df.iloc[-2]
     dif, dea, hist = r["dif"], r["dea"], r["macd_hist"]
     p_hist = p["macd_hist"]
-    if dif > dea and dif > 0 and hist > p_hist:  return 2
-    if dif > dea and hist < p_hist:              return 1
-    if dif < dea and hist > p_hist:              return 0   # 负柱收窄
-    if dif < dea and hist < p_hist:              return -1
-    if dif < 0 and dif < dea and p["dif"] > p["dea"]: return -2  # 零轴下死叉
+    if dif > dea and dif > 0 and hist > p_hist:
+        return 2
+    if dif > dea and hist < p_hist:
+        return 1
+    if dif < dea and hist > p_hist:
+        return 0   # 负柱收窄
+    if dif < dea and hist < p_hist:
+        return -1
+    if dif < 0 and dif < dea and p["dif"] > p["dea"]:
+        return -2  # 零轴下死叉
     return 0
 
 def score_relative(stock_df, index_df) -> int:
     s20 = stock_df["close"].iloc[-1] / stock_df["close"].iloc[-21] - 1
     i20 = index_df["close"].iloc[-1] / index_df["close"].iloc[-21] - 1
     diff = (s20 - i20) * 100
-    if diff > 5:   return 2
-    if diff > 0:   return 1
-    if diff > -5:  return -1
+    if diff > 5:
+        return 2
+    if diff > 0:
+        return 1
+    if diff > -5:
+        return -1
     return -2
 
 def score_volume(df: pd.DataFrame) -> int:
     r = df.iloc[-1]
-    if pd.isna(r["vol_ma5"]): return 0
+    if pd.isna(r["vol_ma5"]):
+        return 0
     ratio = r["volume"] / r["vol_ma5"]
-    if ratio > 1.2 and r["pct_chg"] > 0: return 1
-    if ratio < 0.8 and r["pct_chg"] < 0: return -1
+    if ratio > 1.2 and r["pct_chg"] > 0:
+        return 1
+    if ratio < 0.8 and r["pct_chg"] < 0:
+        return -1
     return 0
 
 def score_valuation(pe_pct: float | None) -> int:
     """pe_pct: 当前PE在历史中的分位（0-1）。无数据返回0"""
-    if pe_pct is None: return 0
-    if pe_pct < 0.20: return 2
-    if pe_pct < 0.40: return 1
-    if pe_pct < 0.60: return 0
-    if pe_pct < 0.80: return -1
+    if pe_pct is None:
+        return 0
+    if pe_pct < 0.20:
+        return 2
+    if pe_pct < 0.40:
+        return 1
+    if pe_pct < 0.60:
+        return 0
+    if pe_pct < 0.80:
+        return -1
     return -2
 
 WEIGHTS = {"ma": 0.25, "macd": 0.20, "relative": 0.20,
@@ -126,19 +153,31 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
         "valuation": score_valuation(pe_pct),
     }
     total = sum(scores[k] * WEIGHTS[k] for k in scores)
-    if total >= 1.2:    rating = "偏多"
-    elif total >= 0.3:  rating = "中性偏多"
-    elif total > -0.3:  rating = "震荡"
-    elif total > -1.2:  rating = "中性偏空"
-    else:               rating = "偏空"
+    if total >= 1.2:
+        rating = "偏多"
+    elif total >= 0.3:
+        rating = "中性偏多"
+    elif total > -0.3:
+        rating = "震荡"
+    elif total > -1.2:
+        rating = "中性偏空"
+    else:
+        rating = "偏空"
+
     # 关键价位
     recent = stock_df.tail(60)
     support = min(recent["low"].min(), stock_df["ma60"].iloc[-1])
     resistance = max(recent["high"].max(), stock_df["ma20"].iloc[-1])
     pivot = stock_df["ma20"].iloc[-1]
+
     return {"scores": scores, "total": round(total, 2), "rating": rating,
             "support": round(support, 2), "resistance": round(resistance, 2),
             "pivot": round(pivot, 2)}
+
+# ============================================================
+# 工具匹配与数量计算（模块四、五）
+# ============================================================
+
 def match_hedge(rating: str, market_value: float, qty: int,
                 beta: float, etf_price: float,
                 has_margin: bool, has_option: bool) -> dict:
@@ -162,7 +201,7 @@ def match_hedge(rating: str, market_value: float, qty: int,
             short_qty = 100 if rating == "中性偏空" else min(200, (qty // 100 - 1) * 100)
             return {"tool": "融券部分对冲", "qty": short_qty,
                     "detail": f"融券卖出{short_qty}股，保留{qty - short_qty}股多头",
-                    "cost_note": f"年化利息约8%，按日计提"}
+                    "cost_note": "年化利息约8%，按日计提"}
         if has_option and equiv_int >= 1:
             return {"tool": "买入虚值认沽", "qty": equiv_int,
                     "detail": f"等效{equiv:.2f}张，向下取整{equiv_int}张",
@@ -186,10 +225,16 @@ def match_hedge(rating: str, market_value: float, qty: int,
     # 4) 中性偏多 / 偏多
     if has_option and equiv_int >= 1 and rating == "中性偏多":
         return {"tool": "可选保护性认沽", "qty": equiv_int,
-                "detail": f"成本可控时买{equiv_int}张作保险", "cost_note": "权利金"}
+                "detail": f"成本可控时买{equiv_int}张作保险",
+                "cost_note": "权利金"}
     return {"tool": "无需对冲", "qty": 0,
             "detail": "设置移动止盈/止损提醒即可", "cost_note": "无"}
-                    st.set_page_config(page_title="对冲分析助手", layout="centered")
+
+# ============================================================
+# 主界面与报告输出（模块六）
+# ============================================================
+
+st.set_page_config(page_title="对冲分析助手", layout="centered")
 st.title("📊 持仓对冲分析助手")
 st.caption("纯分析工具 · 不连接交易接口 · 所有操作需手动执行")
 
@@ -199,10 +244,12 @@ with st.form("input_form"):
     buy_price = col1.number_input("买入价", value=23.00, step=0.01)
     qty = col2.number_input("数量（股）", value=100, step=100)
     buy_date = col2.date_input("买入日期", value=date(2026, 10, 15))
+
     st.markdown("**账户权限（手动勾选）**")
     c1, c2 = st.columns(2)
     has_margin = c1.checkbox("已开通两融账户")
     has_option = c2.checkbox("已开通ETF期权账户")
+
     submitted = st.form_submit_button("开始分析")
 
 if submitted:
@@ -245,4 +292,3 @@ if submitted:
 
     except Exception as e:
         st.error(f"数据获取或计算失败：{e}")
-        
