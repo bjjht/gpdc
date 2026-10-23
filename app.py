@@ -7,11 +7,10 @@ import time
 from requests.exceptions import ConnectionError, Timeout
 
 # ============================================================
-# 模块二：数据层（新浪财经数据源）
+# 数据层（新浪财经数据源）
 # ============================================================
 
 def fetch_with_retry(func, *args, retries=3, delay=2, **kwargs):
-    """通用重试函数：捕获连接类异常，失败后等待 delay 秒重试"""
     for i in range(retries):
         try:
             return func(*args, **kwargs)
@@ -24,7 +23,6 @@ def fetch_with_retry(func, *args, retries=3, delay=2, **kwargs):
 
 
 def _to_sina_symbol(code: str) -> str:
-    """把6位代码转成新浪接口需要的带前缀格式"""
     if code.startswith(('6', '5', '9')):
         return f"sh{code}"
     return f"sz{code}"
@@ -32,7 +30,6 @@ def _to_sina_symbol(code: str) -> str:
 
 @st.cache_data(ttl=1800)
 def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
-    """新浪财经接口获取前复权日线，带重试"""
     symbol = _to_sina_symbol(code)
     end = datetime.today().strftime("%Y%m%d")
     start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
@@ -56,22 +53,15 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
 
 @st.cache_data(ttl=1800)
 def fetch_index_daily(symbol: str = "sh000300", days: int = 250) -> pd.DataFrame:
-    """沪深300指数日线（stock_zh_index_daily 本身就是新浪源），带重试"""
     df = fetch_with_retry(ak.stock_zh_index_daily, symbol=symbol)
-
     if df is None or df.empty:
         raise ValueError("获取指数数据失败，请稍后重试")
-
     df["date"] = pd.to_datetime(df["date"])
     return df.tail(days).reset_index(drop=True)
 
 
 @st.cache_data(ttl=600)
 def fetch_realtime(code: str) -> dict:
-    """
-    实时报价：优先用新浪全市场快照，失败则返回空字典。
-    返回空时主流程会自动降级用日线最后一根收盘价。
-    """
     try:
         spot = fetch_with_retry(ak.stock_zh_a_spot, retries=2, delay=1)
         if spot is None or spot.empty:
@@ -87,12 +77,44 @@ def fetch_realtime(code: str) -> dict:
 
 
 # ============================================================
+# 行业识别（用于行业 ETF 融券对冲）
+# ============================================================
+
+# 简化映射：仅覆盖常见行业，未命中时返回 None，行业ETF分支不触发
+INDUSTRY_KEYWORDS = {
+    "证券": ("512000", "券商ETF华宝"),
+    "券商": ("512000", "券商ETF华宝"),
+    "银行": ("512800", "银行ETF"),
+    "半导体": ("512480", "半导体ETF"),
+    "芯片": ("512480", "半导体ETF"),
+    "医药": ("512010", "医药ETF"),
+    "医疗": ("512170", "医疗ETF"),
+    "消费": ("159928", "消费ETF"),
+    "白酒": ("512690", "酒ETF"),
+    "新能源": ("516160", "新能源ETF"),
+    "光伏": ("515790", "光伏ETF"),
+    "军工": ("512660", "军工ETF"),
+    "地产": ("512200", "房地产ETF"),
+    "煤炭": ("515220", "煤炭ETF"),
+    "有色": ("512400", "有色金属ETF"),
+}
+
+
+def detect_industry_etf(stock_name: str) -> tuple | None:
+    """根据股票名称关键词匹配行业ETF，返回 (代码, 名称) 或 None"""
+    for kw, etf in INDUSTRY_KEYWORDS.items():
+        if kw in stock_name:
+            return etf
+    return None
+
+
+# ============================================================
 # 指标层
 # ============================================================
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["ma5"]  = df["close"].rolling(5).mean()
+    df["ma5"] = df["close"].rolling(5).mean()
     df["ma20"] = df["close"].rolling(20).mean()
     df["ma60"] = df["close"].rolling(60).mean()
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
@@ -106,7 +128,6 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def calc_beta(stock_df: pd.DataFrame, index_df: pd.DataFrame,
               window: int = 90) -> float:
-    """个股 vs 沪深300 的 Beta，用日收益率线性回归斜率"""
     s = stock_df.set_index("date")["close"].pct_change()
     i = index_df.set_index("date")["close"].pct_change()
     joined = pd.concat([s, i], axis=1, keys=["s", "i"]).dropna().tail(window)
@@ -117,7 +138,7 @@ def calc_beta(stock_df: pd.DataFrame, index_df: pd.DataFrame,
 
 
 # ============================================================
-# 趋势打分引擎（模块三）
+# 趋势打分引擎
 # ============================================================
 
 def score_ma(df: pd.DataFrame) -> int:
@@ -125,16 +146,11 @@ def score_ma(df: pd.DataFrame) -> int:
     c, m5, m20, m60 = r["close"], r["ma5"], r["ma20"], r["ma60"]
     if pd.isna(m60):
         return 0
-    if c > m5 > m20 > m60:
-        return 2
-    if c > m20 and m5 < m20:
-        return 1
-    if c < m20 and c > m60:
-        return 0
-    if c < m20 and m5 < m20 < m60:
-        return -1
-    if c < m60:
-        return -2
+    if c > m5 > m20 > m60: return 2
+    if c > m20 and m5 < m20: return 1
+    if c < m20 and c > m60: return 0
+    if c < m20 and m5 < m20 < m60: return -1
+    if c < m60: return -2
     return 0
 
 
@@ -142,16 +158,11 @@ def score_macd(df: pd.DataFrame) -> int:
     r, p = df.iloc[-1], df.iloc[-2]
     dif, dea, hist = r["dif"], r["dea"], r["macd_hist"]
     p_hist = p["macd_hist"]
-    if dif > dea and dif > 0 and hist > p_hist:
-        return 2
-    if dif > dea and hist < p_hist:
-        return 1
-    if dif < dea and hist > p_hist:
-        return 0
-    if dif < dea and hist < p_hist:
-        return -1
-    if dif < 0 and dif < dea and p["dif"] > p["dea"]:
-        return -2
+    if dif > dea and dif > 0 and hist > p_hist: return 2
+    if dif > dea and hist < p_hist: return 1
+    if dif < dea and hist > p_hist: return 0
+    if dif < dea and hist < p_hist: return -1
+    if dif < 0 and dif < dea and p["dif"] > p["dea"]: return -2
     return 0
 
 
@@ -161,12 +172,9 @@ def score_relative(stock_df, index_df) -> int:
     s20 = stock_df["close"].iloc[-1] / stock_df["close"].iloc[-21] - 1
     i20 = index_df["close"].iloc[-1] / index_df["close"].iloc[-21] - 1
     diff = (s20 - i20) * 100
-    if diff > 5:
-        return 2
-    if diff > 0:
-        return 1
-    if diff > -5:
-        return -1
+    if diff > 5: return 2
+    if diff > 0: return 1
+    if diff > -5: return -1
     return -2
 
 
@@ -175,24 +183,17 @@ def score_volume(df: pd.DataFrame) -> int:
     if pd.isna(r["vol_ma5"]) or r["vol_ma5"] == 0:
         return 0
     ratio = r["volume"] / r["vol_ma5"]
-    if ratio > 1.2 and r["pct_chg"] > 0:
-        return 1
-    if ratio < 0.8 and r["pct_chg"] < 0:
-        return -1
+    if ratio > 1.2 and r["pct_chg"] > 0: return 1
+    if ratio < 0.8 and r["pct_chg"] < 0: return -1
     return 0
 
 
 def score_valuation(pe_pct: float | None) -> int:
-    if pe_pct is None:
-        return 0
-    if pe_pct < 0.20:
-        return 2
-    if pe_pct < 0.40:
-        return 1
-    if pe_pct < 0.60:
-        return 0
-    if pe_pct < 0.80:
-        return -1
+    if pe_pct is None: return 0
+    if pe_pct < 0.20: return 2
+    if pe_pct < 0.40: return 1
+    if pe_pct < 0.60: return 0
+    if pe_pct < 0.80: return -1
     return -2
 
 
@@ -209,16 +210,11 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
         "valuation": score_valuation(pe_pct),
     }
     total = sum(scores[k] * WEIGHTS[k] for k in scores)
-    if total >= 1.2:
-        rating = "偏多"
-    elif total >= 0.3:
-        rating = "中性偏多"
-    elif total > -0.3:
-        rating = "震荡"
-    elif total > -1.2:
-        rating = "中性偏空"
-    else:
-        rating = "偏空"
+    if total >= 1.2: rating = "偏多"
+    elif total >= 0.3: rating = "中性偏多"
+    elif total > -0.3: rating = "震荡"
+    elif total > -1.2: rating = "中性偏空"
+    else: rating = "偏空"
 
     recent = stock_df.tail(60)
     support = min(recent["low"].min(), stock_df["ma60"].iloc[-1])
@@ -231,93 +227,122 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 
 
 # ============================================================
-# 工具匹配与数量计算（模块四、五）
+# 工具匹配（含备兑、领口、行业ETF融券）
 # ============================================================
 
 def match_hedge(rating: str, market_value: float, qty: int,
                 beta: float, etf_price: float,
-                has_margin: bool, has_option: bool) -> dict:
+                has_margin: bool, has_option: bool,
+                stock_name: str = "") -> dict:
     """
-    返回 {"tool": ..., "qty": ..., "detail": ..., "cost_note": ...}
-
-    设计原则：
-    - 偏空/中性偏空：首选“直接减仓”（无利息成本），融券对冲仅作为“必须保留底仓”时的备选；
-    - 融券数量按持仓比例计算，去掉固定上限，至少保留100股多头；
-    - 震荡/偏多：期权保护优先，规模不足时降级为仓位管理。
+    决策优先级：
+    - 偏空/中性偏空：减仓（首选）→ 融券部分对冲（备选）
+    - 震荡：行业ETF融券（若有对应行业且有两融）→ 领口策略（若有效张数≥1）
+    - 中性偏多：备兑开仓（若有效张数≥1）→ 可选保护性认沽
+    - 偏多：无需对冲
+    规模不足时统一降级为仓位管理。
     """
     contract_notional = etf_price * 10000
     equiv = market_value * beta / contract_notional if contract_notional else 0
     equiv_int = int(equiv)
 
-    # 1) 规模过小，直接给仓位管理建议
     if market_value < 2000:
         return {"tool": "仓位管理", "qty": 0,
-                "detail": f"市值{market_value:.0f}元低于衍生品有效门槛",
+                "detail": f"市值{market_value:.0f}元低于衍生品有效门槛，建议止损/减仓",
                 "cost_note": "无额外成本"}
 
-    # 2) 偏空 / 中性偏空
+    # ---------- 偏空 / 中性偏空 ----------
     if rating in ("偏空", "中性偏空"):
-        # 减仓比例：偏空减得更多
         reduce_ratio = 0.5 if rating == "中性偏空" else 0.7
         reduce_qty = int(qty * reduce_ratio // 100) * 100
 
-        # 若有两融权限且持仓≥200股，给出“减仓 + 融券备选”的组合建议
         if has_margin and qty >= 200:
             hedge_ratio = 0.5 if rating == "中性偏空" else 0.7
             short_qty = int(qty * hedge_ratio // 100) * 100
-            # 至少融券100股，且至少保留100股多头
             short_qty = max(100, min(short_qty, qty - 100))
-
             return {
                 "tool": "减仓（首选）或 融券部分对冲（备选）",
                 "qty": short_qty,
                 "detail": (
-                    f"首选：直接减仓约 {reduce_ratio*100:.0f}%，"
-                    f"卖出约 {reduce_qty} 股，无利息成本；"
-                    f"若因打新市值、长期底仓等原因必须保留仓位，"
-                    f"可融券卖出约 {short_qty} 股"
-                    f"（对冲比例约 {short_qty/qty*100:.0f}%，"
-                    f"保留 {qty - short_qty} 股多头），"
-                    f"但需承担年化约8%的融券利息"
+                    f"首选直接减仓约 {reduce_ratio*100:.0f}%（卖出约 {reduce_qty} 股），无利息成本；"
+                    f"若必须保留底仓，可融券卖出约 {short_qty} 股"
+                    f"（对冲比例约 {short_qty/qty*100:.0f}%，保留 {qty - short_qty} 股多头），"
+                    f"需承担年化约 8% 的融券利息"
                 ),
-                "cost_note": "减仓无额外成本；融券按日计息，年化约8%",
+                "cost_note": "减仓无额外成本；融券按日计息，年化约 8%",
             }
 
-        # 无两融权限或持仓不足200股，只能减仓
-        return {
-            "tool": "减仓",
-            "qty": reduce_qty,
-            "detail": (
-                f"建议卖出约 {reduce_qty} 股（减仓约 {reduce_ratio*100:.0f}%），"
-                f"无利息成本；"
-                f"当前持仓规模或权限不支持融券部分对冲"
-            ),
-            "cost_note": "无额外成本",
-        }
+        return {"tool": "减仓", "qty": reduce_qty,
+                "detail": f"建议卖出约 {reduce_qty} 股（减仓约 {reduce_ratio*100:.0f}%），无利息成本",
+                "cost_note": "无额外成本"}
 
-    # 3) 震荡
+    # ---------- 震荡 ----------
     if rating == "震荡":
+        # 优先：行业 ETF 融券（如果有对应行业且有两融权限）
+        industry = detect_industry_etf(stock_name)
+        if industry and has_margin and market_value >= 5000:
+            etf_code, etf_name = industry
+            return {
+                "tool": "融券做空行业 ETF",
+                "qty": 0,
+                "detail": (
+                    f"可融券卖出 {etf_name}（{etf_code}），按持仓市值大致匹配。"
+                    f"行业 ETF 空头用于对冲板块层面的系统性回调，"
+                    f"但无法覆盖 {stock_name} 自身的独立利空。"
+                    f"实操前需在券商 APP 确认该 ETF 的实时可融余量，"
+                    f"并注意融券利息按日计提"
+                ),
+                "cost_note": "融券年化利息约 8%，券源需实时确认",
+            }
+        # 其次：领口策略（买虚值认沽 + 卖虚值认购，净成本低）
         if has_option and equiv_int >= 1:
-            return {"tool": "买入轻度虚值认沽", "qty": equiv_int,
-                    "detail": f"低成本保护，{equiv_int}张",
-                    "cost_note": "权利金为最大损失"}
+            return {
+                "tool": "领口策略（买入认沽 + 卖出认购）",
+                "qty": equiv_int,
+                "detail": (
+                    f"等效 {equiv:.2f} 张，向下取整 {equiv_int} 张。"
+                    f"买入虚值认沽提供下行保护，同时卖出虚值认购收取权利金，"
+                    f"用于抵消买沽成本（虚值程度相近时净权利金可能接近于零）。"
+                    f"代价是上方收益被封顶，适合震荡格局"
+                ),
+                "cost_note": "净权利金成本较低，但上方收益受限",
+            }
         if has_margin and qty >= 300:
             return {"tool": "融券保守对冲", "qty": 100,
-                    "detail": "对冲约1/3仓位", "cost_note": "融券利息"}
+                    "detail": "对冲约 1/3 仓位", "cost_note": "融券利息"}
         return {"tool": "持有观望", "qty": 0,
                 "detail": "设置止损提醒，不建对冲仓", "cost_note": "无"}
 
-    # 4) 中性偏多 / 偏多
-    if has_option and equiv_int >= 1 and rating == "中性偏多":
-        return {"tool": "可选保护性认沽", "qty": equiv_int,
-                "detail": f"成本可控时买{equiv_int}张作保险",
-                "cost_note": "权利金"}
+    # ---------- 中性偏多 ----------
+    if rating == "中性偏多":
+        # 优先：备兑开仓（卖认购收权利金，增强收益）
+        if has_option and equiv_int >= 1:
+            return {
+                "tool": "备兑开仓（卖出虚值认购）",
+                "qty": equiv_int,
+                "detail": (
+                    f"等效 {equiv:.2f} 张，向下取整 {equiv_int} 张。"
+                    f"卖出虚值认购期权收取权利金，增厚收益；"
+                    f"用持有的 ETF 现货作为担保，无需额外现金保证金。"
+                    f"代价是若涨幅超过行权价，上方收益被封顶"
+                ),
+                "cost_note": "收取权利金，零现金保证金（需有对应 ETF 现货）",
+            }
+        # 次选：保护性认沽作为保险
+        if has_option and equiv_int >= 1:
+            return {"tool": "可选保护性认沽", "qty": equiv_int,
+                    "detail": f"成本可控时买 {equiv_int} 张作保险",
+                    "cost_note": "权利金"}
+        return {"tool": "无需对冲", "qty": 0,
+                "detail": "设置移动止盈/止损提醒即可", "cost_note": "无"}
+
+    # ---------- 偏多 ----------
     return {"tool": "无需对冲", "qty": 0,
-            "detail": "设置移动止盈/止损提醒即可", "cost_note": "无"}
+            "detail": "趋势偏多，设置移动止盈提醒即可", "cost_note": "无"}
 
 
 # ============================================================
-# 主界面与报告输出（模块六）
+# 主界面
 # ============================================================
 
 st.set_page_config(page_title="对冲分析助手", layout="centered")
@@ -359,33 +384,26 @@ if st.button("开始分析"):
 
             trend = run_trend_engine(stock_df, index_df, pe_pct=None)
             hedge = match_hedge(trend["rating"], market_value, qty, beta,
-                                etf_price, has_margin, has_option)
+                                etf_price, has_margin, has_option,
+                                stock_name=name)
 
             st.subheader("【持仓概览】")
             st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
-                     f"{qty}股 | 市值 {market_value:.0f}元 | "
-                     f"浮盈亏 {pnl:+.0f}元")
+                     f"{qty}股 | 市值 {market_value:.0f}元 | 浮盈亏 {pnl:+.0f}元")
 
             st.subheader(f"【趋势判断】{trend['rating']}（加权得分 {trend['total']}）")
-
             SCORE_LABELS = {
-                "ma":        ("均线系统", 0.25),
-                "macd":      ("MACD动能", 0.20),
-                "relative":  ("相对强弱", 0.20),
-                "volume":    ("量能",     0.15),
+                "ma": ("均线系统", 0.25), "macd": ("MACD动能", 0.20),
+                "relative": ("相对强弱", 0.20), "volume": ("量能", 0.15),
                 "valuation": ("估值分位", 0.20),
             }
-
-            score_rows = []
+            rows = []
             for key, (label, weight) in SCORE_LABELS.items():
                 raw = trend["scores"][key]
-                score_rows.append({
-                    "维度": label,
-                    "得分": raw,
-                    "权重": f"{int(weight * 100)}%",
-                    "加权分": round(raw * weight, 2),
-                })
-            st.table(pd.DataFrame(score_rows))
+                rows.append({"维度": label, "得分": raw,
+                             "权重": f"{int(weight*100)}%",
+                             "加权分": round(raw * weight, 2)})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
             st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
                      f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
