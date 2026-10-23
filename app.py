@@ -80,7 +80,6 @@ def fetch_realtime(code: str) -> dict:
 # 行业识别（用于行业 ETF 融券对冲）
 # ============================================================
 
-# 简化映射：仅覆盖常见行业，未命中时返回 None，行业ETF分支不触发
 INDUSTRY_KEYWORDS = {
     "证券": ("512000", "券商ETF华宝"),
     "券商": ("512000", "券商ETF华宝"),
@@ -101,7 +100,6 @@ INDUSTRY_KEYWORDS = {
 
 
 def detect_industry_etf(stock_name: str) -> tuple | None:
-    """根据股票名称关键词匹配行业ETF，返回 (代码, 名称) 或 None"""
     for kw, etf in INDUSTRY_KEYWORDS.items():
         if kw in stock_name:
             return etf
@@ -227,7 +225,7 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 
 
 # ============================================================
-# 工具匹配（含备兑、领口、行业ETF融券）
+# 工具匹配（统一返回 options 列表，多条并列展示）
 # ============================================================
 
 def match_hedge(rating: str, market_value: float, qty: int,
@@ -235,21 +233,20 @@ def match_hedge(rating: str, market_value: float, qty: int,
                 has_margin: bool, has_option: bool,
                 stock_name: str = "") -> dict:
     """
-    决策优先级：
-    - 偏空/中性偏空：减仓（首选）→ 融券部分对冲（备选）
-    - 震荡：行业ETF融券（若有对应行业且有两融）→ 领口策略（若有效张数≥1）
-    - 中性偏多：备兑开仓（若有效张数≥1）→ 可选保护性认沽
-    - 偏多：无需对冲
-    规模不足时统一降级为仓位管理。
+    返回 {"options": [{"tool":..., "detail":..., "cost_note":...}, ...]}
+    多条 option 表示并列可选方案，主界面逐条展示，不做主次排序。
     """
     contract_notional = etf_price * 10000
     equiv = market_value * beta / contract_notional if contract_notional else 0
     equiv_int = int(equiv)
 
+    # 规模过小
     if market_value < 2000:
-        return {"tool": "仓位管理", "qty": 0,
-                "detail": f"市值{market_value:.0f}元低于衍生品有效门槛，建议止损/减仓",
-                "cost_note": "无额外成本"}
+        return {"options": [{
+            "tool": "仓位管理",
+            "detail": f"市值 {market_value:.0f} 元低于衍生品有效门槛，建议止损/减仓",
+            "cost_note": "无额外成本",
+        }]}
 
     # ---------- 偏空 / 中性偏空 ----------
     if rating in ("偏空", "中性偏空"):
@@ -260,9 +257,8 @@ def match_hedge(rating: str, market_value: float, qty: int,
             hedge_ratio = 0.5 if rating == "中性偏空" else 0.7
             short_qty = int(qty * hedge_ratio // 100) * 100
             short_qty = max(100, min(short_qty, qty - 100))
-            return {
+            return {"options": [{
                 "tool": "减仓（首选）或 融券部分对冲（备选）",
-                "qty": short_qty,
                 "detail": (
                     f"首选直接减仓约 {reduce_ratio*100:.0f}%（卖出约 {reduce_qty} 股），无利息成本；"
                     f"若必须保留底仓，可融券卖出约 {short_qty} 股"
@@ -270,35 +266,35 @@ def match_hedge(rating: str, market_value: float, qty: int,
                     f"需承担年化约 8% 的融券利息"
                 ),
                 "cost_note": "减仓无额外成本；融券按日计息，年化约 8%",
-            }
+            }]}
 
-        return {"tool": "减仓", "qty": reduce_qty,
-                "detail": f"建议卖出约 {reduce_qty} 股（减仓约 {reduce_ratio*100:.0f}%），无利息成本",
-                "cost_note": "无额外成本"}
+        return {"options": [{
+            "tool": "减仓",
+            "detail": f"建议卖出约 {reduce_qty} 股（减仓约 {reduce_ratio*100:.0f}%），无利息成本",
+            "cost_note": "无额外成本",
+        }]}
 
-    # ---------- 震荡 ----------
+    # ---------- 震荡：行业ETF融券 与 领口策略 并列 ----------
     if rating == "震荡":
-        # 优先：行业 ETF 融券（如果有对应行业且有两融权限）
+        options = []
+
         industry = detect_industry_etf(stock_name)
         if industry and has_margin and market_value >= 5000:
             etf_code, etf_name = industry
-            return {
+            options.append({
                 "tool": "融券做空行业 ETF",
-                "qty": 0,
                 "detail": (
                     f"可融券卖出 {etf_name}（{etf_code}），按持仓市值大致匹配。"
                     f"行业 ETF 空头用于对冲板块层面的系统性回调，"
                     f"但无法覆盖 {stock_name} 自身的独立利空。"
-                    f"实操前需在券商 APP 确认该 ETF 的实时可融余量，"
-                    f"并注意融券利息按日计提"
+                    f"实操前需在券商 APP 确认该 ETF 的实时可融余量"
                 ),
                 "cost_note": "融券年化利息约 8%，券源需实时确认",
-            }
-        # 其次：领口策略（买虚值认沽 + 卖虚值认购，净成本低）
+            })
+
         if has_option and equiv_int >= 1:
-            return {
+            options.append({
                 "tool": "领口策略（买入认沽 + 卖出认购）",
-                "qty": equiv_int,
                 "detail": (
                     f"等效 {equiv:.2f} 张，向下取整 {equiv_int} 张。"
                     f"买入虚值认沽提供下行保护，同时卖出虚值认购收取权利金，"
@@ -306,39 +302,64 @@ def match_hedge(rating: str, market_value: float, qty: int,
                     f"代价是上方收益被封顶，适合震荡格局"
                 ),
                 "cost_note": "净权利金成本较低，但上方收益受限",
-            }
-        if has_margin and qty >= 300:
-            return {"tool": "融券保守对冲", "qty": 100,
-                    "detail": "对冲约 1/3 仓位", "cost_note": "融券利息"}
-        return {"tool": "持有观望", "qty": 0,
-                "detail": "设置止损提醒，不建对冲仓", "cost_note": "无"}
+            })
 
-    # ---------- 中性偏多 ----------
+        if not options and has_margin and qty >= 300:
+            options.append({
+                "tool": "融券保守对冲",
+                "detail": "对冲约 1/3 仓位",
+                "cost_note": "融券利息",
+            })
+
+        if not options:
+            options.append({
+                "tool": "持有观望",
+                "detail": "设置止损提醒，不建对冲仓",
+                "cost_note": "无",
+            })
+
+        return {"options": options}
+
+    # ---------- 中性偏多：备兑 与 保护性认沽 并列 ----------
     if rating == "中性偏多":
-        # 优先：备兑开仓（卖认购收权利金，增强收益）
+        options = []
+
         if has_option and equiv_int >= 1:
-            return {
+            options.append({
                 "tool": "备兑开仓（卖出虚值认购）",
-                "qty": equiv_int,
                 "detail": (
                     f"等效 {equiv:.2f} 张，向下取整 {equiv_int} 张。"
                     f"卖出虚值认购期权收取权利金，增厚收益；"
-                    f"用持有的 ETF 现货作为担保，无需额外现金保证金。"
+                    f"需持有对应 ETF 现货作为担保，无需额外现金保证金。"
                     f"代价是若涨幅超过行权价，上方收益被封顶"
                 ),
                 "cost_note": "收取权利金，零现金保证金（需有对应 ETF 现货）",
-            }
-        # 次选：保护性认沽作为保险
-        if has_option and equiv_int >= 1:
-            return {"tool": "可选保护性认沽", "qty": equiv_int,
-                    "detail": f"成本可控时买 {equiv_int} 张作保险",
-                    "cost_note": "权利金"}
-        return {"tool": "无需对冲", "qty": 0,
-                "detail": "设置移动止盈/止损提醒即可", "cost_note": "无"}
+            })
+            options.append({
+                "tool": "保护性认沽（买入虚值认沽）",
+                "detail": (
+                    f"等效 {equiv:.2f} 张，向下取整 {equiv_int} 张。"
+                    f"支付权利金锁定下行底线，保留上方收益空间，"
+                    f"适合“短期防跌、中期仍看好”的判断"
+                ),
+                "cost_note": "权利金为最大损失",
+            })
+
+        if not options:
+            options.append({
+                "tool": "无需对冲",
+                "detail": "设置移动止盈/止损提醒即可",
+                "cost_note": "无",
+            })
+
+        return {"options": options}
 
     # ---------- 偏多 ----------
-    return {"tool": "无需对冲", "qty": 0,
-            "detail": "趋势偏多，设置移动止盈提醒即可", "cost_note": "无"}
+    return {"options": [{
+        "tool": "无需对冲",
+        "detail": "趋势偏多，设置移动止盈提醒即可",
+        "cost_note": "无",
+    }]}
 
 
 # ============================================================
@@ -408,9 +429,20 @@ if st.button("开始分析"):
             st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
                      f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
 
+            # ---- 工具匹配：并列展示 ----
             st.subheader("【工具匹配】")
-            st.info(f"**{hedge['tool']}** — {hedge['detail']}")
-            st.write(f"成本提示：{hedge['cost_note']}")
+            opts = hedge.get("options", [])
+            if len(opts) == 1:
+                st.markdown(f"**{opts[0]['tool']}**")
+                st.info(opts[0]["detail"])
+                st.write(f"成本提示：{opts[0]['cost_note']}")
+            else:
+                for i, opt in enumerate(opts, 1):
+                    st.markdown(f"**方案 {i}：{opt['tool']}**")
+                    st.info(opt["detail"])
+                    st.write(f"成本提示：{opt['cost_note']}")
+                    if i < len(opts):
+                        st.divider()
 
             st.subheader("【手动执行提示】")
             st.warning("请在券商App中手动完成上述操作；本工具不发送任何委托。")
