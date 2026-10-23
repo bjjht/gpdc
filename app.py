@@ -76,8 +76,27 @@ def fetch_realtime(code: str) -> dict:
         return {}
 
 
+@st.cache_data(ttl=600)
+def fetch_etf_realtime(etf_code: str) -> dict:
+    """
+    获取ETF实时价格，用于行业ETF融券和300ETF期权相关计算。
+    失败时返回空字典，调用方需处理降级。
+    """
+    try:
+        df = fetch_with_retry(ak.fund_etf_spot_em, retries=2, delay=1)
+        if df is None or df.empty:
+            return {}
+        row = df[df["代码"].astype(str) == etf_code]
+        if row.empty:
+            return {}
+        r = row.iloc[0]
+        return {"price": float(r["最新价"]), "name": r["名称"]}
+    except Exception:
+        return {}
+
+
 # ============================================================
-# 行业识别（用于行业 ETF 融券对冲）
+# 行业识别与期权行权价档位
 # ============================================================
 
 INDUSTRY_KEYWORDS = {
@@ -104,6 +123,49 @@ def detect_industry_etf(stock_name: str) -> tuple | None:
         if kw in stock_name:
             return etf
     return None
+
+
+def get_strike_interval(etf_price: float) -> float:
+    """
+    300ETF期权行权价间距规则（上交所）：
+    3元或以下 0.05；3至5元（含）0.1；5至10元（含）0.25；
+    10至20元（含）0.5；20至50元（含）1；50至100元（含）2.5；100元以上5。
+    """
+    if etf_price <= 3:
+        return 0.05
+    if etf_price <= 5:
+        return 0.1
+    if etf_price <= 10:
+        return 0.25
+    if etf_price <= 20:
+        return 0.5
+    if etf_price <= 50:
+        return 1.0
+    if etf_price <= 100:
+        return 2.5
+    return 5.0
+
+
+def round_to_strike(target: float, interval: float) -> float:
+    """把目标行权价四舍五入到最近的合法档位"""
+    return round(target / interval) * interval
+
+
+def option_month_label() -> str:
+    """返回近月合约的月份标签，如 '11月'。简化处理：取当前月或下月。"""
+    today = datetime.today()
+    # 当月第四个星期三之前，用当月；之后用下月。这里做简化：统一用下月，避免临近到期。
+    next_month = today.month + 1 if today.month < 12 else 1
+    return f"{next_month}月"
+
+
+def format_option_name(opt_type: str, month: str, strike: float) -> str:
+    """
+    opt_type: '购' 或 '沽'
+    行权价格乘以1000后的整数，如 4.00 -> 4000
+    """
+    strike_int = int(round(strike * 1000))
+    return f"300ETF{opt_type}{month}{strike_int}"
 
 
 # ============================================================
@@ -225,20 +287,41 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 
 
 # ============================================================
-# 工具匹配（统一返回 options 列表，多条并列展示）
+# 工具匹配（返回 options 列表，支持并列展示）
 # ============================================================
 
 def match_hedge(rating: str, market_value: float, qty: int,
-                beta: float, etf_price: float,
+                beta: float,
                 has_margin: bool, has_option: bool,
-                stock_name: str = "") -> dict:
+                stock_name: str = "",
+                etf_300_price: float | None = None) -> dict:
     """
     返回 {"options": [{"tool":..., "detail":..., "cost_note":...}, ...]}
-    多条 option 表示并列可选方案，主界面逐条展示，不做主次排序。
+    多条 option 并列展示。
+
+    etf_300_price: 300ETF（510300）实时价格，用于期权合约和等效张数。
+                   为 None 时降级为参考值 4.0，并在 detail 中注明。
     """
-    contract_notional = etf_price * 10000
+    # ---- 300ETF 价格与合约基础参数 ----
+    etf_price_used = etf_300_price if etf_300_price else 4.0
+    price_source_note = "" if etf_300_price else "（300ETF价格获取失败，按参考价4.0估算）"
+    contract_notional = etf_price_used * 10000
     equiv = market_value * beta / contract_notional if contract_notional else 0
     equiv_int = int(equiv)
+
+    # 行权价档位与月份标签
+    interval = get_strike_interval(etf_price_used)
+    month = option_month_label()
+
+    # 虚值认沽：现价下方 3%–5%，取更靠下的档位
+    put_target = etf_price_used * 0.95
+    put_strike = round_to_strike(put_target, interval)
+    put_name = format_option_name("沽", month, put_strike)
+
+    # 虚值认购：现价上方 3%–5%，取更靠上的档位
+    call_target = etf_price_used * 1.05
+    call_strike = round_to_strike(call_target, interval)
+    call_name = format_option_name("购", month, call_strike)
 
     # 规模过小
     if market_value < 2000:
@@ -278,32 +361,61 @@ def match_hedge(rating: str, market_value: float, qty: int,
     if rating == "震荡":
         options = []
 
+        # 方案A：行业 ETF 融券
         industry = detect_industry_etf(stock_name)
         if industry and has_margin and market_value >= 5000:
             etf_code, etf_name = industry
-            options.append({
-                "tool": "融券做空行业 ETF",
-                "detail": (
-                    f"可融券卖出 {etf_name}（{etf_code}），按持仓市值大致匹配。"
-                    f"行业 ETF 空头用于对冲板块层面的系统性回调，"
-                    f"但无法覆盖 {stock_name} 自身的独立利空。"
-                    f"实操前需在券商 APP 确认该 ETF 的实时可融余量"
-                ),
-                "cost_note": "融券年化利息约 8%，券源需实时确认",
-            })
+            etf_rt = fetch_etf_realtime(etf_code)
+            etf_px = etf_rt.get("price")
+            if etf_px:
+                # 行业Beta经验估计：券商行业取1.3，其他行业取1.2
+                industry_beta = 1.3 if etf_code == "512000" else 1.2
+                raw_shares = market_value * industry_beta / etf_px
+                short_shares = int(raw_shares // 100) * 100
+                short_shares = max(100, short_shares)
+                options.append({
+                    "tool": "融券做空行业 ETF",
+                    "detail": (
+                        f"{etf_name}（{etf_code}）实时参考价 **{etf_px:.3f} 元**。"
+                        f"按持仓市值 × 行业Beta估计（{industry_beta}）÷ ETF价格，"
+                        f"参考融券份数约 **{short_shares} 份**（100份整数倍，仅供参考，"
+                        f"可根据实际风险敞口调整）。"
+                        f"行业 ETF 空头用于对冲板块层面的系统性回调，"
+                        f"但无法覆盖 {stock_name} 自身的独立利空"
+                    ),
+                    "cost_note": (
+                        "融券年化利息约 8%，"
+                        "**务必在券商APP“融券标的”中确认实时可融余量后再下单**"
+                    ),
+                })
+            else:
+                options.append({
+                    "tool": "融券做空行业 ETF（价格获取失败）",
+                    "detail": (
+                        f"检测到对应行业ETF：{etf_name}（{etf_code}），"
+                        f"但实时价格获取失败，无法计算参考份数。"
+                        f"请手动在券商APP查看该ETF价格和可融余量"
+                    ),
+                    "cost_note": "融券利息约 8%，需手动确认券源",
+                })
 
+        # 方案B：领口策略
         if has_option and equiv_int >= 1:
             options.append({
                 "tool": "领口策略（买入认沽 + 卖出认购）",
                 "detail": (
-                    f"等效 {equiv:.2f} 张，向下取整 {equiv_int} 张。"
-                    f"买入虚值认沽提供下行保护，同时卖出虚值认购收取权利金，"
-                    f"用于抵消买沽成本（虚值程度相近时净权利金可能接近于零）。"
-                    f"代价是上方收益被封顶，适合震荡格局"
+                    f"300ETF参考价 **{etf_price_used:.3f} 元**{price_source_note}，"
+                    f"等效约 {equiv:.2f} 张，向下取整 **{equiv_int} 张**。"
+                    f"参考合约：**买入 {put_name}**（虚值认沽，行权价 {put_strike:.1f}）"
+                    f" + **卖出 {call_name}**（虚值认购，行权价 {call_strike:.1f}）。"
+                    f"买沽提供下行保护，卖购收取权利金以抵消买沽成本，"
+                    f"净权利金成本较低甚至可能接近于零，代价是上方收益被封顶。"
+                    f"**权利金精确报价请以券商APP期权T型报价为准**"
                 ),
-                "cost_note": "净权利金成本较低，但上方收益受限",
+                "cost_note": "净权利金成本较低，上方收益受限；精确权利金需手动查看",
             })
 
+        # 降级：没有行业ETF也没有期权时
         if not options and has_margin and qty >= 300:
             options.append({
                 "tool": "融券保守对冲",
@@ -328,21 +440,26 @@ def match_hedge(rating: str, market_value: float, qty: int,
             options.append({
                 "tool": "备兑开仓（卖出虚值认购）",
                 "detail": (
-                    f"等效 {equiv:.2f} 张，向下取整 {equiv_int} 张。"
-                    f"卖出虚值认购期权收取权利金，增厚收益；"
-                    f"需持有对应 ETF 现货作为担保，无需额外现金保证金。"
-                    f"代价是若涨幅超过行权价，上方收益被封顶"
+                    f"300ETF参考价 **{etf_price_used:.3f} 元**{price_source_note}，"
+                    f"等效约 {equiv:.2f} 张，向下取整 **{equiv_int} 张**。"
+                    f"参考合约：**卖出 {call_name}**（虚值认购，行权价 {call_strike:.1f}）。"
+                    f"卖出认购收取权利金增厚收益；需持有对应 300ETF 现货作为担保，"
+                    f"无需额外现金保证金。代价是若涨幅超过行权价，上方收益被封顶。"
+                    f"**权利金精确报价请以券商APP期权T型报价为准**"
                 ),
-                "cost_note": "收取权利金，零现金保证金（需有对应 ETF 现货）",
+                "cost_note": "收取权利金，零现金保证金（需有对应 300ETF 现货）",
             })
             options.append({
                 "tool": "保护性认沽（买入虚值认沽）",
                 "detail": (
-                    f"等效 {equiv:.2f} 张，向下取整 {equiv_int} 张。"
+                    f"300ETF参考价 **{etf_price_used:.3f} 元**{price_source_note}，"
+                    f"等效约 {equiv:.2f} 张，向下取整 **{equiv_int} 张**。"
+                    f"参考合约：**买入 {put_name}**（虚值认沽，行权价 {put_strike:.1f}）。"
                     f"支付权利金锁定下行底线，保留上方收益空间，"
-                    f"适合“短期防跌、中期仍看好”的判断"
+                    f"适合“短期防跌、中期仍看好”的判断。"
+                    f"**权利金精确报价请以券商APP期权T型报价为准**"
                 ),
-                "cost_note": "权利金为最大损失",
+                "cost_note": "权利金为最大损失；精确权利金需手动查看",
             })
 
         if not options:
@@ -399,14 +516,20 @@ if st.button("开始分析"):
             name = rt.get("name", code)
             beta = calc_beta(stock_df, index_df)
 
-            etf_price = 4.0
+            # 300ETF 实时价格（用于期权合约和等效张数）
+            etf_300 = fetch_etf_realtime("510300")
+            etf_300_price = etf_300.get("price")
+
             market_value = price * qty
             pnl = (price - buy_price) * qty
 
             trend = run_trend_engine(stock_df, index_df, pe_pct=None)
-            hedge = match_hedge(trend["rating"], market_value, qty, beta,
-                                etf_price, has_margin, has_option,
-                                stock_name=name)
+            hedge = match_hedge(
+                trend["rating"], market_value, qty, beta,
+                has_margin, has_option,
+                stock_name=name,
+                etf_300_price=etf_300_price,
+            )
 
             st.subheader("【持仓概览】")
             st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
@@ -445,7 +568,10 @@ if st.button("开始分析"):
                         st.divider()
 
             st.subheader("【手动执行提示】")
-            st.warning("请在券商App中手动完成上述操作；本工具不发送任何委托。")
+            st.warning(
+                "请在券商App中手动完成上述操作；本工具不发送任何委托。"
+                "期权权利金的精确报价、行业ETF的实时可融余量，均需在券商App中最终确认。"
+            )
 
         except Exception as e:
             st.error(f"数据获取或计算失败：{e}")
