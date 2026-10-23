@@ -237,29 +237,65 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 def match_hedge(rating: str, market_value: float, qty: int,
                 beta: float, etf_price: float,
                 has_margin: bool, has_option: bool) -> dict:
+    """
+    返回 {"tool": ..., "qty": ..., "detail": ..., "cost_note": ...}
+
+    设计原则：
+    - 偏空/中性偏空：首选“直接减仓”（无利息成本），融券对冲仅作为“必须保留底仓”时的备选；
+    - 融券数量按持仓比例计算，去掉固定上限，至少保留100股多头；
+    - 震荡/偏多：期权保护优先，规模不足时降级为仓位管理。
+    """
     contract_notional = etf_price * 10000
     equiv = market_value * beta / contract_notional if contract_notional else 0
     equiv_int = int(equiv)
 
+    # 1) 规模过小，直接给仓位管理建议
     if market_value < 2000:
         return {"tool": "仓位管理", "qty": 0,
                 "detail": f"市值{market_value:.0f}元低于衍生品有效门槛",
                 "cost_note": "无额外成本"}
 
+    # 2) 偏空 / 中性偏空
     if rating in ("偏空", "中性偏空"):
-        if has_margin and qty >= 200:
-            short_qty = 100 if rating == "中性偏空" else min(200, (qty // 100 - 1) * 100)
-            return {"tool": "融券部分对冲", "qty": short_qty,
-                    "detail": f"融券卖出{short_qty}股，保留{qty - short_qty}股多头",
-                    "cost_note": "年化利息约8%，按日计提"}
-        if has_option and equiv_int >= 1:
-            return {"tool": "买入虚值认沽", "qty": equiv_int,
-                    "detail": f"等效{equiv:.2f}张，向下取整{equiv_int}张",
-                    "cost_note": f"覆盖约{equiv_int/equiv*100:.0f}%风险暴露"}
-        return {"tool": "仓位管理", "qty": 0,
-                "detail": "无可用衍生品权限或规模不足，建议止损/减仓",
-                "cost_note": "无额外成本"}
+        # 减仓比例：偏空减得更多
+        reduce_ratio = 0.5 if rating == "中性偏空" else 0.7
+        reduce_qty = int(qty * reduce_ratio // 100) * 100
 
+        # 若有两融权限且持仓≥200股，给出“减仓 + 融券备选”的组合建议
+        if has_margin and qty >= 200:
+            hedge_ratio = 0.5 if rating == "中性偏空" else 0.7
+            short_qty = int(qty * hedge_ratio // 100) * 100
+            # 至少融券100股，且至少保留100股多头
+            short_qty = max(100, min(short_qty, qty - 100))
+
+            return {
+                "tool": "减仓（首选）或 融券部分对冲（备选）",
+                "qty": short_qty,
+                "detail": (
+                    f"首选：直接减仓约 {reduce_ratio*100:.0f}%，"
+                    f"卖出约 {reduce_qty} 股，无利息成本；"
+                    f"若因打新市值、长期底仓等原因必须保留仓位，"
+                    f"可融券卖出约 {short_qty} 股"
+                    f"（对冲比例约 {short_qty/qty*100:.0f}%，"
+                    f"保留 {qty - short_qty} 股多头），"
+                    f"但需承担年化约8%的融券利息"
+                ),
+                "cost_note": "减仓无额外成本；融券按日计息，年化约8%",
+            }
+
+        # 无两融权限或持仓不足200股，只能减仓
+        return {
+            "tool": "减仓",
+            "qty": reduce_qty,
+            "detail": (
+                f"建议卖出约 {reduce_qty} 股（减仓约 {reduce_ratio*100:.0f}%），"
+                f"无利息成本；"
+                f"当前持仓规模或权限不支持融券部分对冲"
+            ),
+            "cost_note": "无额外成本",
+        }
+
+    # 3) 震荡
     if rating == "震荡":
         if has_option and equiv_int >= 1:
             return {"tool": "买入轻度虚值认沽", "qty": equiv_int,
@@ -271,6 +307,7 @@ def match_hedge(rating: str, market_value: float, qty: int,
         return {"tool": "持有观望", "qty": 0,
                 "detail": "设置止损提醒，不建对冲仓", "cost_note": "无"}
 
+    # 4) 中性偏多 / 偏多
     if has_option and equiv_int >= 1 and rating == "中性偏多":
         return {"tool": "可选保护性认沽", "qty": equiv_int,
                 "detail": f"成本可控时买{equiv_int}张作保险",
