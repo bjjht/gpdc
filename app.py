@@ -56,6 +56,8 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
+# ---------- ETF 日线：三源 fallback ----------
+
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
     end = datetime.today().strftime("%Y%m%d")
     start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
@@ -133,6 +135,7 @@ def fetch_realtime(code: str) -> dict:
 
 @st.cache_data(ttl=600)
 def fetch_etf_realtime(etf_code: str) -> dict:
+    """ETF 实时价格，用于行业 ETF 融券和宽基期权计算"""
     try:
         df = fetch_with_retry(ak.fund_etf_spot_em, retries=2, delay=1)
         if df is None or df.empty:
@@ -376,7 +379,7 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 
 
 # ============================================================
-# 工具匹配（函数入口先初始化 options，防止 NameError）
+# 工具匹配（行业 ETF 融券结构化输出）
 # ============================================================
 
 def match_hedge(rating: str, market_value: float, qty: int,
@@ -386,9 +389,6 @@ def match_hedge(rating: str, market_value: float, qty: int,
                 broad_etf: dict = None,
                 etf_price: float = None,
                 corr: dict = None) -> dict:
-
-    options = []   # 防御性初始化：任何分支之前先定义
-
     if broad_etf is None:
         broad_etf = {"code": "510300", "name": "300ETF", "index_name": "沪深300",
                      "match_note": ""}
@@ -447,10 +447,10 @@ def match_hedge(rating: str, market_value: float, qty: int,
             "cost_note": "无额外成本",
         }]}
 
-    # ---------- 震荡：行业 ETF 融券 + 宽基期权并列 ----------
     if rating == "震荡":
-        options = []   # 重新清空，确保干净
+        options = []
 
+        # ---------- 行业 ETF 融券（结构化） ----------
         industry = detect_industry_etf(stock_name)
         if industry and has_margin and market_value >= 5000:
             etf_code, etf_name = industry
@@ -488,6 +488,7 @@ def match_hedge(rating: str, market_value: float, qty: int,
                     "cost_note": "融券利息约 8%，需手动确认券源",
                 })
 
+        # ---------- 宽基期权 ----------
         if has_option and equiv_int >= 1:
             if corr["r2"] is not None and corr["r2"] < 0.09:
                 options.append({
@@ -524,10 +525,8 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
         return {"options": options}
 
-    # ---------- 中性偏多 ----------
     if rating == "中性偏多":
         options = []
-
         if has_option and equiv_int >= 1:
             if corr["r2"] is not None and corr["r2"] < 0.09:
                 options.append({
@@ -559,7 +558,6 @@ def match_hedge(rating: str, market_value: float, qty: int,
                             "cost_note": "无"})
         return {"options": options}
 
-    # ---------- 偏多 ----------
     return {"options": [{
         "tool": "无需对冲",
         "detail": "趋势偏多，设置移动止盈提醒即可",
@@ -644,6 +642,7 @@ if st.button("开始分析"):
             st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
                      f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
 
+            # ---- 宽基匹配度验证 ----
             st.subheader("【宽基匹配度验证】")
             st.write(
                 f"规则初选：**{broad_etf['name']}（{broad_etf['code']}）**，"
@@ -666,13 +665,16 @@ if st.button("开始分析"):
                 st.caption(
                     f"数据源：**{etf_source}**。"
                     f"基于最近 {corr['n']} 个交易日的日收益率对齐计算。"
+                    f"R² 表示 {broad_etf['name']} 的涨跌能解释个股多少比例的波动；"
+                    f"R² 越高，用它做期权对冲的效果越可靠。"
                 )
             else:
                 st.warning(
                     f"⚠️ 东财、腾讯、新浪三个接口均未能获取 {broad_etf['name']} 的历史日线，"
-                    f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选。"
+                    f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选，匹配度未经数据验证。"
                 )
 
+            # ---- 工具匹配（含行业 ETF 结构化展示） ----
             st.subheader("【工具匹配】")
             opts = hedge.get("options", [])
             if len(opts) == 1:
@@ -685,7 +687,7 @@ if st.button("开始分析"):
                         f"- **实时参考价**：**{d['price']:.3f} 元**\n"
                         f"- **行业 Beta 估计**：{d['industry_beta']}\n"
                         f"- **参考融券份数**：**{d['short_shares']} 份**"
-                        f"（100 份整数倍，仅供参考）"
+                        f"（100 份整数倍，仅供参考，可根据实际风险敞口调整）"
                     )
                     st.info(opt["detail"])
                 else:
