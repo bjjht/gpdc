@@ -56,8 +56,6 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
-# ---------- ETF 日线：三源 fallback ----------
-
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
     end = datetime.today().strftime("%Y%m%d")
     start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
@@ -135,7 +133,6 @@ def fetch_realtime(code: str) -> dict:
 
 @st.cache_data(ttl=600)
 def fetch_etf_realtime(etf_code: str) -> dict:
-    """ETF 实时价格，用于行业 ETF 融券和宽基期权计算"""
     try:
         df = fetch_with_retry(ak.fund_etf_spot_em, retries=2, delay=1)
         if df is None or df.empty:
@@ -379,16 +376,18 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 
 
 # ============================================================
-# 工具匹配（行业 ETF 融券结构化输出）
+# 工具匹配（默认两融+期权全权限，直接给可执行指令）
 # ============================================================
 
 def match_hedge(rating: str, market_value: float, qty: int,
                 beta: float,
-                has_margin: bool, has_option: bool,
                 stock_code: str = "", stock_name: str = "",
                 broad_etf: dict = None,
                 etf_price: float = None,
                 corr: dict = None) -> dict:
+
+    options = []
+
     if broad_etf is None:
         broad_etf = {"code": "510300", "name": "300ETF", "index_name": "沪深300",
                      "match_note": ""}
@@ -416,43 +415,70 @@ def match_hedge(rating: str, market_value: float, qty: int,
         f"（{corr['n']} 个交易日），匹配度等级：**{grade['label']}**。"
     )
 
+    # 规模过小：直接给减仓指令
     if market_value < 2000:
         return {"options": [{
-            "tool": "仓位管理",
-            "detail": f"市值 {market_value:.0f} 元低于衍生品有效门槛，建议止损/减仓",
-            "cost_note": "无额外成本",
+            "tool": "直接减仓/清仓",
+            "detail": (
+                f"市值 {market_value:.0f} 元低于任何衍生品的有效规模门槛。"
+                f"**直接卖出 {qty} 股 {stock_name}（{stock_code}）**，"
+                f"市价委托即可，无利息、无权利金、无保证金。"
+            ),
+            "cost_note": "仅正常交易佣金，无额外成本",
+            "action": "SELL",
+            "target": f"{stock_name}（{stock_code}）",
+            "side": "卖出",
+            "qty": qty,
+            "price_hint": "市价委托",
         }]}
 
+    # ---------- 偏空 / 中性偏空：减仓 + 融券对冲 ----------
     if rating in ("偏空", "中性偏空"):
         reduce_ratio = 0.5 if rating == "中性偏空" else 0.7
         reduce_qty = int(qty * reduce_ratio // 100) * 100
+        hedge_ratio = 0.5 if rating == "中性偏空" else 0.7
+        short_qty = int(qty * hedge_ratio // 100) * 100
+        short_qty = max(100, min(short_qty, qty - 100))
 
-        if has_margin and qty >= 200:
-            hedge_ratio = 0.5 if rating == "中性偏空" else 0.7
-            short_qty = int(qty * hedge_ratio // 100) * 100
-            short_qty = max(100, min(short_qty, qty - 100))
-            return {"options": [{
-                "tool": "减仓（首选）或 融券部分对冲（备选）",
-                "detail": (
-                    f"首选直接减仓约 {reduce_ratio*100:.0f}%（卖出约 {reduce_qty} 股），无利息成本；"
-                    f"若必须保留底仓，可融券卖出约 {short_qty} 股"
-                    f"（对冲比例约 {short_qty/qty*100:.0f}%），需承担年化约 8% 的融券利息"
-                ),
-                "cost_note": "减仓无额外成本；融券按日计息，年化约 8%",
-            }]}
+        options.append({
+            "tool": "减仓（首选）",
+            "detail": (
+                f"**卖出 {reduce_qty} 股 {stock_name}（{stock_code}）**，"
+                f"市价委托即可，减仓约 {reduce_ratio*100:.0f}%，"
+                f"无利息成本，剩余持仓 {qty - reduce_qty} 股"
+            ),
+            "cost_note": "仅正常交易佣金",
+            "action": "SELL",
+            "target": f"{stock_name}（{stock_code}）",
+            "side": "卖出",
+            "qty": reduce_qty,
+            "price_hint": "市价委托",
+        })
 
-        return {"options": [{
-            "tool": "减仓",
-            "detail": f"建议卖出约 {reduce_qty} 股（减仓约 {reduce_ratio*100:.0f}%），无利息成本",
-            "cost_note": "无额外成本",
-        }]}
+        options.append({
+            "tool": "融券部分对冲（保留底仓的备选）",
+            "detail": (
+                f"**融券卖出 {short_qty} 股 {stock_name}（{stock_code}）**，"
+                f"保留 {qty - short_qty} 股多头。"
+                f"对冲比例约 {short_qty/qty*100:.0f}%，"
+                f"**下单前务必在券商APP确认该股实时可融余量**"
+            ),
+            "cost_note": "融券年化利息约 8%，按日计提",
+            "action": "SHORT_SELL",
+            "target": f"{stock_name}（{stock_code}）",
+            "side": "融券卖出",
+            "qty": short_qty,
+            "price_hint": "不低于最新成交价",
+        })
 
+        return {"options": options}
+
+    # ---------- 震荡：行业 ETF 融券 + 宽基领口 并列 ----------
     if rating == "震荡":
         options = []
 
-        # ---------- 行业 ETF 融券（结构化） ----------
         industry = detect_industry_etf(stock_name)
-        if industry and has_margin and market_value >= 5000:
+        if industry and market_value >= 5000:
             etf_code, etf_name = industry
             etf_rt = fetch_etf_realtime(etf_code)
             etf_px = etf_rt.get("price")
@@ -463,16 +489,17 @@ def match_hedge(rating: str, market_value: float, qty: int,
                 options.append({
                     "tool": "融券做空行业 ETF",
                     "detail": (
-                        f"用于对冲 {stock_name} 的板块层面系统性回调，"
-                        f"但无法覆盖个股自身的独立利空。"
-                        f"**行业 ETF 的券源通常比宽基更稀缺**，"
-                        f"开盘时段可能短暂有券、几分钟内被借空。"
+                        f"**融券卖出 {etf_name}（{etf_code}）{short_shares} 份**，"
+                        f"对冲 {stock_name} 的板块系统性风险。"
+                        f"行业ETF券源通常比宽基更稀缺，"
+                        f"**下单前务必在“融券标的”中确认实时可融余量**"
                     ),
-                    "cost_note": (
-                        "融券年化利息估算约 8%；"
-                        "行业 ETF 券源稀缺时利率可能更高，以券商 APP 实时报价为准。"
-                        "**下单前务必在“融券标的”中确认当前可融余量。**"
-                    ),
+                    "cost_note": "融券年化利息约 8%，券源稀缺时可能更高，以券商APP为准",
+                    "action": "SHORT_SELL",
+                    "target": f"{etf_name}（{etf_code}）",
+                    "side": "融券卖出",
+                    "qty": short_shares,
+                    "price_hint": "不低于最新成交价",
                     "etf_detail": {
                         "name": etf_name,
                         "code": etf_code,
@@ -481,23 +508,15 @@ def match_hedge(rating: str, market_value: float, qty: int,
                         "industry_beta": industry_beta,
                     },
                 })
-            else:
-                options.append({
-                    "tool": "融券做空行业 ETF（价格获取失败）",
-                    "detail": f"检测到 {etf_name}（{etf_code}），但实时价格获取失败，请手动查看",
-                    "cost_note": "融券利息约 8%，需手动确认券源",
-                })
 
-        # ---------- 宽基期权 ----------
-        if has_option and equiv_int >= 1:
+        if equiv_int >= 1:
             if corr["r2"] is not None and corr["r2"] < 0.09:
                 options.append({
                     "tool": f"⚠️ {broad_etf['name']} 期权（不推荐）",
                     "detail": (
                         f"{match_line}"
-                        f"R² 低于 0.09，**{broad_etf['name']} 与 {stock_name} 联动性很差**，"
-                        f"期权对冲大概率效果有限。"
-                        f"合约参考：买入 {put_name} / 卖出 {call_name}，约 {equiv_int} 张，但不建议执行。"
+                        f"R² 低于 0.09，期权对冲大概率无效，**不建议执行**。"
+                        f"若坚持使用：买入 {put_name} + 卖出 {call_name}，各 {equiv_int} 张。"
                     ),
                     "cost_note": "权利金可能成为沉没成本",
                 })
@@ -506,32 +525,36 @@ def match_hedge(rating: str, market_value: float, qty: int,
                     "tool": f"领口策略（{broad_etf['name']}）",
                     "detail": (
                         f"{match_line}"
-                        f"实时参考价 **{etf_price_used:.3f} 元**{price_note}，"
-                        f"等效约 {equiv:.2f} 张，向下取整 **{equiv_int} 张**。"
-                        f"参考合约：**买入 {put_name}**（行权价 {put_strike:.2f}）"
-                        f" + **卖出 {call_name}**（行权价 {call_strike:.2f}）。"
-                        f"**精确权利金以券商 APP 为准**"
+                        f"**买入 {put_name} {equiv_int} 张**（防跌）"
+                        f" + **卖出 {call_name} {equiv_int} 张**（收权利金抵消成本）。"
+                        f"{broad_etf['name']} 实时参考价 **{etf_price_used:.3f} 元**{price_note}。"
+                        f"**权利金精确报价以券商APP期权T型报价为准**"
                     ),
                     "cost_note": "净权利金成本较低，上方收益受限",
+                    "action": "OPTION_COLLAR",
+                    "target": f"{put_name} + {call_name}",
+                    "side": "买入认沽 + 卖出认购",
+                    "qty": equiv_int,
+                    "price_hint": "以券商APP权利金为准",
                 })
 
-        if not options and has_margin and qty >= 300:
-            options.append({"tool": "融券保守对冲", "detail": "对冲约 1/3 仓位",
-                            "cost_note": "融券利息"})
-
         if not options:
-            options.append({"tool": "持有观望", "detail": "设置止损提醒，不建对冲仓",
-                            "cost_note": "无"})
+            options.append({
+                "tool": "持有观望",
+                "detail": "设置止损提醒，不建对冲仓",
+                "cost_note": "无",
+            })
 
         return {"options": options}
 
+    # ---------- 中性偏多：备兑 + 保护性认沽 并列 ----------
     if rating == "中性偏多":
         options = []
-        if has_option and equiv_int >= 1:
+        if equiv_int >= 1:
             if corr["r2"] is not None and corr["r2"] < 0.09:
                 options.append({
                     "tool": f"⚠️ {broad_etf['name']} 期权（不推荐）",
-                    "detail": f"{match_line} R² 太低，期权对冲效果不可靠。",
+                    "detail": f"{match_line} R² 太低，期权对冲效果不可靠，**不建议执行**。",
                     "cost_note": "权利金可能沉没",
                 })
             else:
@@ -539,25 +562,42 @@ def match_hedge(rating: str, market_value: float, qty: int,
                     "tool": f"备兑开仓（卖出 {broad_etf['name']} 认购）",
                     "detail": (
                         f"{match_line}"
-                        f"参考合约：**卖出 {call_name}**，约 {equiv_int} 张。"
-                        f"需持有对应 {broad_etf['name']} 现货作为担保"
+                        f"**卖出 {call_name} {equiv_int} 张**，收取权利金增厚收益。"
+                        f"需持有对应 **{broad_etf['name']}（{broad_etf['code']}）现货** 作为担保，"
+                        f"每张合约对应 10,000 份 ETF。"
+                        f"上方涨幅超过行权价时收益封顶"
                     ),
-                    "cost_note": "收取权利金，需有对应 ETF 现货",
+                    "cost_note": "收取权利金，需有对应 ETF 现货；权利金以券商APP为准",
+                    "action": "OPTION_COVERED_CALL",
+                    "target": call_name,
+                    "side": "卖出认购",
+                    "qty": equiv_int,
+                    "price_hint": "以券商APP权利金为准",
                 })
                 options.append({
                     "tool": f"保护性认沽（买入 {broad_etf['name']} 认沽）",
                     "detail": (
                         f"{match_line}"
-                        f"参考合约：**买入 {put_name}**，约 {equiv_int} 张。"
+                        f"**买入 {put_name} {equiv_int} 张**，支付权利金锁定下行底线，保留上方收益。"
+                        f"最大损失为已支付的权利金"
                     ),
-                    "cost_note": "权利金为最大损失",
+                    "cost_note": "权利金为最大损失；精确报价以券商APP为准",
+                    "action": "OPTION_PROTECTIVE_PUT",
+                    "target": put_name,
+                    "side": "买入认沽",
+                    "qty": equiv_int,
+                    "price_hint": "以券商APP权利金为准",
                 })
 
         if not options:
-            options.append({"tool": "无需对冲", "detail": "设置移动止盈/止损提醒即可",
-                            "cost_note": "无"})
+            options.append({
+                "tool": "无需对冲",
+                "detail": "设置移动止盈/止损提醒即可",
+                "cost_note": "无",
+            })
         return {"options": options}
 
+    # ---------- 偏多 ----------
     return {"options": [{
         "tool": "无需对冲",
         "detail": "趋势偏多，设置移动止盈提醒即可",
@@ -566,12 +606,15 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
 
 # ============================================================
-# 主界面
+# 主界面（已移除账户权限勾选，默认全权限）
 # ============================================================
 
 st.set_page_config(page_title="对冲分析助手", layout="centered")
 st.title("📊 持仓对冲分析助手")
-st.caption("纯分析工具 · 不连接交易接口 · 所有操作需手动执行")
+st.caption(
+    "纯分析工具 · 不连接交易接口 · 所有操作需手动执行 · "
+    "**默认两融账户和期权账户均已开通**"
+)
 
 col1, col2 = st.columns(2)
 code = col1.text_input("股票代码", "")
@@ -580,11 +623,6 @@ buy_price = col1.number_input("买入价", value=None, step=0.01,
 qty = col2.number_input("数量（股）", value=None, step=100,
                         placeholder="如 100")
 buy_date = col2.date_input("买入日期", value=None)
-
-st.markdown("**账户权限（手动勾选）**")
-c1, c2 = st.columns(2)
-has_margin = c1.checkbox("已开通两融账户")
-has_option = c2.checkbox("已开通ETF期权账户")
 
 if st.button("开始分析"):
     if not code.strip() or buy_price is None or qty is None:
@@ -616,7 +654,6 @@ if st.button("开始分析"):
             trend = run_trend_engine(stock_df, index_df, pe_pct=None)
             hedge = match_hedge(
                 trend["rating"], market_value, qty, beta,
-                has_margin, has_option,
                 stock_code=code, stock_name=name,
                 broad_etf=broad_etf, etf_price=etf_price, corr=corr,
             )
@@ -642,7 +679,6 @@ if st.button("开始分析"):
             st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
                      f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
 
-            # ---- 宽基匹配度验证 ----
             st.subheader("【宽基匹配度验证】")
             st.write(
                 f"规则初选：**{broad_etf['name']}（{broad_etf['code']}）**，"
@@ -665,57 +701,48 @@ if st.button("开始分析"):
                 st.caption(
                     f"数据源：**{etf_source}**。"
                     f"基于最近 {corr['n']} 个交易日的日收益率对齐计算。"
-                    f"R² 表示 {broad_etf['name']} 的涨跌能解释个股多少比例的波动；"
-                    f"R² 越高，用它做期权对冲的效果越可靠。"
                 )
             else:
                 st.warning(
                     f"⚠️ 东财、腾讯、新浪三个接口均未能获取 {broad_etf['name']} 的历史日线，"
-                    f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选，匹配度未经数据验证。"
+                    f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选。"
                 )
 
-            # ---- 工具匹配（含行业 ETF 结构化展示） ----
-            st.subheader("【工具匹配】")
+            st.subheader("【工具匹配 · 具体执行指令】")
             opts = hedge.get("options", [])
-            if len(opts) == 1:
-                opt = opts[0]
-                st.markdown(f"**{opt['tool']}**")
+            for i, opt in enumerate(opts, 1):
+                if len(opts) > 1:
+                    st.markdown(f"### 方案 {i}：{opt['tool']}")
+                else:
+                    st.markdown(f"### {opt['tool']}")
+
+                # 有结构化执行指令时优先展示
+                if "action" in opt:
+                    st.markdown(
+                        f"- **对冲谁**：{opt['target']}\n"
+                        f"- **方向**：{opt['side']}\n"
+                        f"- **数量**：**{opt['qty']}**\n"
+                        f"- **价格**：{opt['price_hint']}"
+                    )
+
+                # 行业 ETF 额外结构化字段
                 if "etf_detail" in opt:
                     d = opt["etf_detail"]
                     st.markdown(
-                        f"- **标的**：{d['name']}（{d['code']}）\n"
-                        f"- **实时参考价**：**{d['price']:.3f} 元**\n"
                         f"- **行业 Beta 估计**：{d['industry_beta']}\n"
-                        f"- **参考融券份数**：**{d['short_shares']} 份**"
-                        f"（100 份整数倍，仅供参考，可根据实际风险敞口调整）"
+                        f"- **实时参考价**：**{d['price']:.3f} 元**"
                     )
-                    st.info(opt["detail"])
-                else:
-                    st.info(opt["detail"])
-                st.warning(opt["cost_note"])
-            else:
-                for i, opt in enumerate(opts, 1):
-                    st.markdown(f"**方案 {i}：{opt['tool']}**")
-                    if "etf_detail" in opt:
-                        d = opt["etf_detail"]
-                        st.markdown(
-                            f"- **标的**：{d['name']}（{d['code']}）\n"
-                            f"- **实时参考价**：**{d['price']:.3f} 元**\n"
-                            f"- **行业 Beta 估计**：{d['industry_beta']}\n"
-                            f"- **参考融券份数**：**{d['short_shares']} 份**"
-                            f"（100 份整数倍，仅供参考）"
-                        )
-                        st.info(opt["detail"])
-                    else:
-                        st.info(opt["detail"])
-                    st.warning(opt["cost_note"])
-                    if i < len(opts):
-                        st.divider()
+
+                st.info(opt["detail"])
+                st.warning(f"成本：{opt['cost_note']}")
+
+                if i < len(opts):
+                    st.divider()
 
             st.subheader("【手动执行提示】")
             st.warning(
-                "请在券商 App 中手动完成上述操作；本工具不发送任何委托。"
-                "期权权利金的精确报价、行业 ETF 的实时可融余量，均需在券商 App 中最终确认。"
+                "以上指令均为参考，请在券商 APP 中核对实时价格、券源、权利金后再手动下单。"
+                "本工具不发送任何委托。"
             )
 
         except Exception as e:
