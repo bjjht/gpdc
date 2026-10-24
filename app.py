@@ -376,7 +376,7 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 
 
 # ============================================================
-# 工具匹配（默认全权限，直接给可执行指令）
+# 工具匹配
 # ============================================================
 
 def match_hedge(rating: str, market_value: float, qty: int,
@@ -415,7 +415,6 @@ def match_hedge(rating: str, market_value: float, qty: int,
         f"（{corr['n']} 个交易日），匹配度等级：**{grade['label']}**。"
     )
 
-    # 规模过小：直接给减仓指令
     if market_value < 2000:
         return {"options": [{
             "tool": "直接减仓/清仓",
@@ -432,7 +431,6 @@ def match_hedge(rating: str, market_value: float, qty: int,
             "price_hint": "市价委托",
         }]}
 
-    # ---------- 偏空 / 中性偏空：减仓 + 融券对冲 ----------
     if rating in ("偏空", "中性偏空"):
         reduce_ratio = 0.5 if rating == "中性偏空" else 0.7
         reduce_qty = int(qty * reduce_ratio // 100) * 100
@@ -473,7 +471,6 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
         return {"options": options}
 
-    # ---------- 震荡：行业 ETF 融券 + 宽基领口 并列 ----------
     if rating == "震荡":
         options = []
 
@@ -547,7 +544,6 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
         return {"options": options}
 
-    # ---------- 中性偏多：备兑 + 保护性认沽 并列 ----------
     if rating == "中性偏多":
         options = []
         if equiv_int >= 1:
@@ -597,7 +593,6 @@ def match_hedge(rating: str, market_value: float, qty: int,
             })
         return {"options": options}
 
-    # ---------- 偏多 ----------
     return {"options": [{
         "tool": "无需对冲",
         "detail": "趋势偏多，设置移动止盈提醒即可",
@@ -611,53 +606,84 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
 st.set_page_config(page_title="对冲分析助手", layout="centered")
 
-# ---- 自定义样式 ----
-st.markdown("""
+# ---- 字号模板选择 ----
+size_mode = st.radio(
+    "显示大小（可切换）",
+    ["标准", "大字（推荐老年人）", "特大字"],
+    horizontal=True,
+    index=1,
+)
+scale = {"标准": 1.0, "大字（推荐老年人）": 1.3, "特大字": 1.6}[size_mode]
+
+# ---- 动态 CSS ----
+st.markdown(f"""
 <style>
-/* 隐藏 Streamlit 默认的 Running 状态指示器 */
 [data-testid="stStatusWidget"],
-[data-testid="stAppRunningMan"] {
+[data-testid="stAppRunningMan"] {{
     display: none !important;
     visibility: hidden !important;
     height: 0 !important;
-}
+}}
 
-/* 输入框标签加粗 */
 [data-testid="stTextInput"] label,
 [data-testid="stNumberInput"] label,
-[data-testid="stDateInput"] label {
-    font-weight: bold !important;
-    font-size: 16px !important;
-}
+[data-testid="stDateInput"] label {{
+    font-size: {18 * scale}px !important;
+    font-weight: 800 !important;
+    color: #111 !important;
+}}
 
-/* 开始分析按钮：大、粗、金色 */
-.stButton > button {
-    font-size: 22px !important;
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-testid="stDateInput"] input {{
+    font-size: {18 * scale}px !important;
+    font-weight: 600 !important;
+}}
+
+.stButton > button {{
+    font-size: {22 * scale}px !important;
     font-weight: bold !important;
     color: #FFD700 !important;
     background-color: #1a1a1a !important;
     border: 2px solid #FFD700 !important;
-    padding: 12px 40px !important;
+    padding: {12 * scale}px {36 * scale}px !important;
     border-radius: 8px !important;
     transition: all 0.2s ease !important;
-}
-.stButton > button:hover {
+}}
+.stButton > button:hover {{
     background-color: #333333 !important;
     color: #FFE55C !important;
     border-color: #FFE55C !important;
-}
+}}
+
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li {{
+    font-size: {15 * scale}px !important;
+}}
+
+[data-testid="stMetricValue"] {{
+    font-size: {24 * scale}px !important;
+}}
+[data-testid="stMetricLabel"] {{
+    font-size: {13 * scale}px !important;
+}}
+
+[data-testid="stRadio"] label {{
+    font-size: {16 * scale}px !important;
+    font-weight: 600 !important;
+}}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 持仓对冲分析助手")
-
-# ---- 红色同字号提示 ----
-st.markdown(
-    "<p style='color: red; font-size: 15px; margin-top: -8px;'>"
-    "纯分析工具 · 不连接交易接口 · 所有操作需手动执行 · 默认两融账户和期权账户均已开通"
-    "</p>",
-    unsafe_allow_html=True
-)
+# ---- 标题 + 红色提示合并为一行 ----
+st.markdown(f"""
+<div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin-bottom:8px;">
+  <span style="font-size:{1.8 * scale}rem; font-weight:800;">📊 持仓对冲分析助手</span>
+  <span style="color:#e00000; font-size:{0.95 * scale}rem; font-weight:700;">
+    纯分析 · 不连接交易接口 · 所有操作需手动执行 · 两融和期权账户已默认开通
+  </span>
+</div>
+""", unsafe_allow_html=True)
 
 col1, col2 = st.columns(2)
 code = col1.text_input("股票代码", "")
