@@ -376,7 +376,7 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 
 
 # ============================================================
-# 工具匹配（默认两融+期权全权限，直接给可执行指令）
+# 工具匹配（默认全权限，直接给可执行指令）
 # ============================================================
 
 def match_hedge(rating: str, market_value: float, qty: int,
@@ -606,14 +606,57 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
 
 # ============================================================
-# 主界面（已移除账户权限勾选，默认全权限）
+# 主界面
 # ============================================================
 
 st.set_page_config(page_title="对冲分析助手", layout="centered")
+
+# ---- 自定义样式 ----
+st.markdown("""
+<style>
+/* 隐藏 Streamlit 默认的 Running 状态指示器 */
+[data-testid="stStatusWidget"],
+[data-testid="stAppRunningMan"] {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+}
+
+/* 输入框标签加粗 */
+[data-testid="stTextInput"] label,
+[data-testid="stNumberInput"] label,
+[data-testid="stDateInput"] label {
+    font-weight: bold !important;
+    font-size: 16px !important;
+}
+
+/* 开始分析按钮：大、粗、金色 */
+.stButton > button {
+    font-size: 22px !important;
+    font-weight: bold !important;
+    color: #FFD700 !important;
+    background-color: #1a1a1a !important;
+    border: 2px solid #FFD700 !important;
+    padding: 12px 40px !important;
+    border-radius: 8px !important;
+    transition: all 0.2s ease !important;
+}
+.stButton > button:hover {
+    background-color: #333333 !important;
+    color: #FFE55C !important;
+    border-color: #FFE55C !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("📊 持仓对冲分析助手")
-st.caption(
-    "纯分析工具 · 不连接交易接口 · 所有操作需手动执行 · "
-    "**默认两融账户和期权账户均已开通**"
+
+# ---- 红色同字号提示 ----
+st.markdown(
+    "<p style='color: red; font-size: 15px; margin-top: -8px;'>"
+    "纯分析工具 · 不连接交易接口 · 所有操作需手动执行 · 默认两融账户和期权账户均已开通"
+    "</p>",
+    unsafe_allow_html=True
 )
 
 col1, col2 = st.columns(2)
@@ -628,122 +671,121 @@ if st.button("开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        try:
-            code = code.strip()
-            qty = int(qty)
+        with st.spinner("在运算请稍等..."):
+            try:
+                code = code.strip()
+                qty = int(qty)
 
-            stock_df = add_indicators(fetch_stock_daily(code))
-            index_df = fetch_index_daily()
-            rt = fetch_realtime(code)
+                stock_df = add_indicators(fetch_stock_daily(code))
+                index_df = fetch_index_daily()
+                rt = fetch_realtime(code)
 
-            price = rt.get("price", stock_df["close"].iloc[-1])
-            name = rt.get("name", code)
-            beta = calc_beta(stock_df, index_df)
+                price = rt.get("price", stock_df["close"].iloc[-1])
+                name = rt.get("name", code)
+                beta = calc_beta(stock_df, index_df)
 
-            broad_etf = select_broad_etf(code, beta)
-            etf_hist, etf_source = fetch_etf_daily(broad_etf["code"], days=90)
-            corr = calc_correlation_r2(stock_df, etf_hist, window=60)
-            grade = r2_grade(corr["r2"])
+                broad_etf = select_broad_etf(code, beta)
+                etf_hist, etf_source = fetch_etf_daily(broad_etf["code"], days=90)
+                corr = calc_correlation_r2(stock_df, etf_hist, window=60)
+                grade = r2_grade(corr["r2"])
 
-            etf_rt = fetch_etf_realtime(broad_etf["code"])
-            etf_price = etf_rt.get("price")
+                etf_rt = fetch_etf_realtime(broad_etf["code"])
+                etf_price = etf_rt.get("price")
 
-            market_value = price * qty
-            pnl = (price - buy_price) * qty
+                market_value = price * qty
+                pnl = (price - buy_price) * qty
 
-            trend = run_trend_engine(stock_df, index_df, pe_pct=None)
-            hedge = match_hedge(
-                trend["rating"], market_value, qty, beta,
-                stock_code=code, stock_name=name,
-                broad_etf=broad_etf, etf_price=etf_price, corr=corr,
-            )
-
-            st.subheader("【持仓概览】")
-            st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
-                     f"{qty}股 | 市值 {market_value:.0f}元 | 浮盈亏 {pnl:+.0f}元")
-
-            st.subheader(f"【趋势判断】{trend['rating']}（加权得分 {trend['total']}）")
-            SCORE_LABELS = {
-                "ma": ("均线系统", 0.25), "macd": ("MACD动能", 0.20),
-                "relative": ("相对强弱", 0.20), "volume": ("量能", 0.15),
-                "valuation": ("估值分位", 0.20),
-            }
-            rows = []
-            for key, (label, weight) in SCORE_LABELS.items():
-                raw = trend["scores"][key]
-                rows.append({"维度": label, "得分": raw,
-                             "权重": f"{int(weight*100)}%",
-                             "加权分": round(raw * weight, 2)})
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-            st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
-                     f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
-
-            st.subheader("【宽基匹配度验证】")
-            st.write(
-                f"规则初选：**{broad_etf['name']}（{broad_etf['code']}）**，"
-                f"跟踪 {broad_etf['index_name']}。{broad_etf['match_note']}。"
-            )
-
-            if corr["r"] is not None:
-                col_a, col_b, col_c = st.columns(3)
-                col_a.metric("相关系数 r", f"{corr['r']:.3f}")
-                col_b.metric("R²（拟合优度）", f"{corr['r2']:.3f}")
-                col_c.metric("匹配度等级", grade["label"])
-
-                if grade["color"] == "green":
-                    st.success(f"✅ {grade['meaning']}")
-                elif grade["color"] == "orange":
-                    st.warning(f"⚠️ {grade['meaning']}")
-                else:
-                    st.error(f"❌ {grade['meaning']}")
-
-                st.caption(
-                    f"数据源：**{etf_source}**。"
-                    f"基于最近 {corr['n']} 个交易日的日收益率对齐计算。"
+                trend = run_trend_engine(stock_df, index_df, pe_pct=None)
+                hedge = match_hedge(
+                    trend["rating"], market_value, qty, beta,
+                    stock_code=code, stock_name=name,
+                    broad_etf=broad_etf, etf_price=etf_price, corr=corr,
                 )
-            else:
+
+                st.subheader("【持仓概览】")
+                st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
+                         f"{qty}股 | 市值 {market_value:.0f}元 | 浮盈亏 {pnl:+.0f}元")
+
+                st.subheader(f"【趋势判断】{trend['rating']}（加权得分 {trend['total']}）")
+                SCORE_LABELS = {
+                    "ma": ("均线系统", 0.25), "macd": ("MACD动能", 0.20),
+                    "relative": ("相对强弱", 0.20), "volume": ("量能", 0.15),
+                    "valuation": ("估值分位", 0.20),
+                }
+                rows = []
+                for key, (label, weight) in SCORE_LABELS.items():
+                    raw = trend["scores"][key]
+                    rows.append({"维度": label, "得分": raw,
+                                 "权重": f"{int(weight*100)}%",
+                                 "加权分": round(raw * weight, 2)})
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
+                         f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
+
+                st.subheader("【宽基匹配度验证】")
+                st.write(
+                    f"规则初选：**{broad_etf['name']}（{broad_etf['code']}）**，"
+                    f"跟踪 {broad_etf['index_name']}。{broad_etf['match_note']}。"
+                )
+
+                if corr["r"] is not None:
+                    col_a, col_b, col_c = st.columns(3)
+                    col_a.metric("相关系数 r", f"{corr['r']:.3f}")
+                    col_b.metric("R²（拟合优度）", f"{corr['r2']:.3f}")
+                    col_c.metric("匹配度等级", grade["label"])
+
+                    if grade["color"] == "green":
+                        st.success(f"✅ {grade['meaning']}")
+                    elif grade["color"] == "orange":
+                        st.warning(f"⚠️ {grade['meaning']}")
+                    else:
+                        st.error(f"❌ {grade['meaning']}")
+
+                    st.caption(
+                        f"数据源：**{etf_source}**。"
+                        f"基于最近 {corr['n']} 个交易日的日收益率对齐计算。"
+                    )
+                else:
+                    st.warning(
+                        f"⚠️ 东财、腾讯、新浪三个接口均未能获取 {broad_etf['name']} 的历史日线，"
+                        f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选。"
+                    )
+
+                st.subheader("【工具匹配 · 具体执行指令】")
+                opts = hedge.get("options", [])
+                for i, opt in enumerate(opts, 1):
+                    if len(opts) > 1:
+                        st.markdown(f"### 方案 {i}：{opt['tool']}")
+                    else:
+                        st.markdown(f"### {opt['tool']}")
+
+                    if "action" in opt:
+                        st.markdown(
+                            f"- **对冲产品**：{opt['target']}\n"
+                            f"- **方向**：{opt['side']}\n"
+                            f"- **数量**：**{opt['qty']}**\n"
+                            f"- **价格**：{opt['price_hint']}"
+                        )
+
+                    if "etf_detail" in opt:
+                        d = opt["etf_detail"]
+                        st.markdown(
+                            f"- **行业 Beta 估计**：{d['industry_beta']}\n"
+                            f"- **实时参考价**：**{d['price']:.3f} 元**"
+                        )
+
+                    st.info(opt["detail"])
+                    st.warning(f"成本：{opt['cost_note']}")
+
+                    if i < len(opts):
+                        st.divider()
+
+                st.subheader("【手动执行提示】")
                 st.warning(
-                    f"⚠️ 东财、腾讯、新浪三个接口均未能获取 {broad_etf['name']} 的历史日线，"
-                    f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选。"
+                    "以上指令均为参考，请在券商 APP 中核对实时价格、券源、权利金后再手动下单。"
+                    "本工具不发送任何委托。"
                 )
 
-            st.subheader("【工具匹配 · 具体执行指令】")
-            opts = hedge.get("options", [])
-            for i, opt in enumerate(opts, 1):
-                if len(opts) > 1:
-                    st.markdown(f"### 方案 {i}：{opt['tool']}")
-                else:
-                    st.markdown(f"### {opt['tool']}")
-
-                # 有结构化执行指令时优先展示
-                if "action" in opt:
-                    st.markdown(
-                        f"- **对冲谁**：{opt['target']}\n"
-                        f"- **方向**：{opt['side']}\n"
-                        f"- **数量**：**{opt['qty']}**\n"
-                        f"- **价格**：{opt['price_hint']}"
-                    )
-
-                # 行业 ETF 额外结构化字段
-                if "etf_detail" in opt:
-                    d = opt["etf_detail"]
-                    st.markdown(
-                        f"- **行业 Beta 估计**：{d['industry_beta']}\n"
-                        f"- **实时参考价**：**{d['price']:.3f} 元**"
-                    )
-
-                st.info(opt["detail"])
-                st.warning(f"成本：{opt['cost_note']}")
-
-                if i < len(opts):
-                    st.divider()
-
-            st.subheader("【手动执行提示】")
-            st.warning(
-                "以上指令均为参考，请在券商 APP 中核对实时价格、券源、权利金后再手动下单。"
-                "本工具不发送任何委托。"
-            )
-
-        except Exception as e:
-            st.error(f"数据获取或计算失败：{e}")
+            except Exception as e:
+                st.error(f"数据获取或计算失败：{e}")
