@@ -601,89 +601,116 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
 
 # ============================================================
-# 主界面
+# 主界面（固定大字模式，无选择器）
 # ============================================================
 
 st.set_page_config(page_title="对冲分析助手", layout="centered")
 
-# ---- 字号模板选择 ----
-size_mode = st.radio(
-    "显示大小（可切换）",
-    ["标准", "大字（推荐老年人）", "特大字"],
-    horizontal=True,
-    index=1,
-)
-scale = {"标准": 1.0, "大字（推荐老年人）": 1.3, "特大字": 1.6}[size_mode]
-
-# ---- 动态 CSS ----
-st.markdown(f"""
+# ---- 固定老年人大字样式 ----
+st.markdown("""
 <style>
+/* 彻底隐藏 Running 状态指示器 */
 [data-testid="stStatusWidget"],
-[data-testid="stAppRunningMan"] {{
+[data-testid="stAppRunningMan"] {
     display: none !important;
     visibility: hidden !important;
+    position: absolute !important;
+    top: -9999px !important;
+    left: -9999px !important;
+    width: 0 !important;
     height: 0 !important;
-}}
+    overflow: hidden !important;
+}
 
+/* 输入框标签：加粗 + 24px */
 [data-testid="stTextInput"] label,
 [data-testid="stNumberInput"] label,
-[data-testid="stDateInput"] label {{
-    font-size: {18 * scale}px !important;
+[data-testid="stDateInput"] label {
+    font-size: 24px !important;
     font-weight: 800 !important;
     color: #111 !important;
-}}
+    margin-bottom: 4px !important;
+}
 
+/* 输入框内容：24px + 加大高度 */
 [data-testid="stTextInput"] input,
 [data-testid="stNumberInput"] input,
-[data-testid="stDateInput"] input {{
-    font-size: {18 * scale}px !important;
+[data-testid="stDateInput"] input {
+    font-size: 24px !important;
     font-weight: 600 !important;
-}}
+    min-height: 54px !important;
+    padding: 10px 14px !important;
+}
 
-.stButton > button {{
-    font-size: {22 * scale}px !important;
+/* 日期选择器弹出日历：整块放大 */
+[data-baseweb="calendar"],
+[data-baseweb="calendar"] * {
+    font-size: 20px !important;
+    font-weight: 600 !important;
+}
+[data-baseweb="calendar"] [role="gridcell"],
+[data-baseweb="calendar"] [role="gridcell"] div {
+    min-width: 46px !important;
+    min-height: 46px !important;
+    line-height: 46px !important;
+}
+[data-baseweb="calendar"] button {
+    font-size: 20px !important;
+    font-weight: 700 !important;
+}
+
+/* 开始分析按钮：金色大字 */
+.stButton > button {
+    font-size: 30px !important;
     font-weight: bold !important;
     color: #FFD700 !important;
     background-color: #1a1a1a !important;
-    border: 2px solid #FFD700 !important;
-    padding: {12 * scale}px {36 * scale}px !important;
-    border-radius: 8px !important;
+    border: 3px solid #FFD700 !important;
+    padding: 14px 44px !important;
+    border-radius: 10px !important;
+    min-height: 66px !important;
     transition: all 0.2s ease !important;
-}}
-.stButton > button:hover {{
+}
+.stButton > button:hover {
     background-color: #333333 !important;
     color: #FFE55C !important;
     border-color: #FFE55C !important;
-}}
+}
 
+/* 正文放大 */
 [data-testid="stMarkdownContainer"] p,
-[data-testid="stMarkdownContainer"] li {{
-    font-size: {15 * scale}px !important;
-}}
+[data-testid="stMarkdownContainer"] li {
+    font-size: 18px !important;
+}
 
-[data-testid="stMetricValue"] {{
-    font-size: {24 * scale}px !important;
-}}
-[data-testid="stMetricLabel"] {{
-    font-size: {13 * scale}px !important;
-}}
+/* 指标卡数值放大 */
+[data-testid="stMetricValue"] {
+    font-size: 30px !important;
+    font-weight: 700 !important;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 16px !important;
+}
 
-[data-testid="stRadio"] label {{
-    font-size: {16 * scale}px !important;
-    font-weight: 600 !important;
-}}
+/* 表格数据放大 */
+[data-testid="stDataFrame"] * {
+    font-size: 16px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ---- 标题 + 红色提示合并为一行 ----
-st.markdown(f"""
-<div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin-bottom:8px;">
-  <span style="font-size:{1.8 * scale}rem; font-weight:800;">📊 持仓对冲分析助手</span>
-  <span style="color:#e00000; font-size:{0.95 * scale}rem; font-weight:700;">
-    纯分析 · 不连接交易接口 · 所有操作需手动执行 · 两融和期权账户已默认开通
-  </span>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+      <span style="font-size:2.0rem; font-weight:800;">📊 持仓对冲分析助手</span>
+      <span style="color:#e00000; font-size:1.05rem; font-weight:700;">
+        纯分析 · 不连接交易接口 · 所有操作需手动执行 · 两融和期权账户已默认开通
+      </span>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 col1, col2 = st.columns(2)
 code = col1.text_input("股票代码", "")
