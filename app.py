@@ -601,25 +601,40 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
 
 # ============================================================
-# 主界面（固定大字模式，无选择器）
+# 主界面（固定老年人大字样式）
 # ============================================================
 
 st.set_page_config(page_title="对冲分析助手", layout="centered")
 
-# ---- 固定老年人大字样式 ----
+# ---- 固定老年人大字样式 + 彻底隐藏 Running ----
 st.markdown("""
 <style>
-/* 彻底隐藏 Running 状态指示器 */
+/* 彻底隐藏所有版本的 Running 指示器，包括点击后页面底部的那个 */
 [data-testid="stStatusWidget"],
-[data-testid="stAppRunningMan"] {
+[data-testid="stAppRunningMan"],
+[data-testid="stConnectionStatus"],
+[data-testid="stDecoration"],
+[class*="StatusWidget"],
+[class*="stStatusWidget"],
+[class*="RunningMan"] {
     display: none !important;
     visibility: hidden !important;
-    position: absolute !important;
-    top: -9999px !important;
-    left: -9999px !important;
+    opacity: 0 !important;
+    position: fixed !important;
+    top: -99999px !important;
+    left: -99999px !important;
     width: 0 !important;
     height: 0 !important;
+    max-width: 0 !important;
+    max-height: 0 !important;
     overflow: hidden !important;
+    pointer-events: none !important;
+    z-index: -99999 !important;
+}
+
+/* 隐藏 Streamlit 主菜单，避免误点 */
+#MainMenu {
+    visibility: hidden !important;
 }
 
 /* 输入框标签：加粗 + 24px */
@@ -642,20 +657,22 @@ st.markdown("""
     padding: 10px 14px !important;
 }
 
-/* 日期选择器弹出日历：整块放大 */
+/* 日期选择器弹出日历：整块放大，格子 54×54 */
 [data-baseweb="calendar"],
 [data-baseweb="calendar"] * {
-    font-size: 20px !important;
-    font-weight: 600 !important;
+    font-size: 22px !important;
+    font-weight: 700 !important;
 }
 [data-baseweb="calendar"] [role="gridcell"],
 [data-baseweb="calendar"] [role="gridcell"] div {
-    min-width: 46px !important;
-    min-height: 46px !important;
-    line-height: 46px !important;
+    min-width: 54px !important;
+    min-height: 54px !important;
+    line-height: 54px !important;
+    font-size: 22px !important;
+    font-weight: 700 !important;
 }
 [data-baseweb="calendar"] button {
-    font-size: 20px !important;
+    font-size: 22px !important;
     font-weight: 700 !important;
 }
 
