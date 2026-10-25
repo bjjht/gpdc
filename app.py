@@ -202,53 +202,20 @@ ALL_SOURCES = [
 
 
 # ============================================================
-# 数据源自检
+# 多源同时取数（对输入股票对应的宽基ETF）
 # ============================================================
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def detect_available_etf_sources(probe_code: str = "510300") -> tuple:
-    available, details = [], []
-    for name, func in ALL_SOURCES:
-        try:
-            df = func(probe_code, days=30)
-            if df is not None and not df.empty and len(df) >= 10:
-                available.append((name, func))
-                details.append(f"✅ {name}: 可用（{len(df)}行）")
-            else:
-                details.append(f"❌ {name}: 返回空或数据不足")
-        except Exception as e:
-            details.append(f"❌ {name}: {str(e)[:60]}")
-        time.sleep(0.5)
-    return available, details
-
-
-# ============================================================
-# 多源同时取数 + 最优选择
-# ============================================================
-
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
     """
-    从所有可用源分别获取 ETF 日线，返回每个源的结果和最优源。
-    选择最优源的规则：
-      1) 优先选择行数最多且结束日期最新的源
-      2) 若行数相同，选择结束日期更新的
-      3) 若仍相同，选择列表中靠前的源
-    返回：
-      {
-        "best_source": 最优源名称,
-        "best_df": 最优源的 DataFrame,
-        "all_results": {源名称: {df, rows, start, end, status}},
-        "summary": 可读的汇总字符串
-      }
+    对全部 6 个数据源，用传入的 etf_code（来自 select_broad_etf 选出的、
+    与输入股票对应的宽基ETF）逐一取数，每个源独立记录结果。
+    最优源：行数最多 + 结束日期最新。
     """
-    available, _ = detect_available_etf_sources()
-    sources_to_try = available if available else ALL_SOURCES
-
     all_results = {}
-    valid = []   # (name, df, rows, end_date)
+    valid = []
 
-    for name, func in sources_to_try:
+    for name, func in ALL_SOURCES:
         try:
             df = fetch_with_retry(func, etf_code, days, retries=1, delay=1)
             if df is not None and not df.empty and len(df) >= 30:
@@ -257,7 +224,6 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
                 start_d = df["date"].min()
                 end_d = df["date"].max()
                 all_results[name] = {
-                    "df": df,
                     "rows": rows,
                     "start": start_d.strftime("%Y-%m-%d"),
                     "end": end_d.strftime("%Y-%m-%d"),
@@ -266,32 +232,29 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
                 valid.append((name, df, rows, end_d))
             else:
                 all_results[name] = {
-                    "df": pd.DataFrame(), "rows": 0,
-                    "start": "-", "end": "-",
+                    "rows": 0, "start": "-", "end": "-",
                     "status": "⚠️ 空或数据不足",
                 }
         except Exception as e:
             all_results[name] = {
-                "df": pd.DataFrame(), "rows": 0,
-                "start": "-", "end": "-",
+                "rows": 0, "start": "-", "end": "-",
                 "status": f"❌ {str(e)[:50]}",
             }
-        time.sleep(0.6)   # 源之间间隔，降低被限风险
+        time.sleep(0.6)
 
     if not valid:
         return {
             "best_source": "无可用源",
             "best_df": pd.DataFrame(),
             "all_results": all_results,
-            "summary": "所有数据源均未返回有效数据",
+            "summary": f"⚠️ 全部 {len(ALL_SOURCES)} 个数据源均未返回 {etf_code} 的有效数据。",
         }
 
-    # 排序：行数降序，结束日期降序
     valid.sort(key=lambda x: (-x[2], -x[3].timestamp()))
     best_name, best_df, best_rows, best_end = valid[0]
 
     summary = (
-        f"共 {len(valid)} 个源返回有效数据；"
+        f"探测标的：**{etf_code}**；共 **{len(valid)}/{len(ALL_SOURCES)}** 个源返回有效数据；"
         f"最优源：**{best_name}**（{best_rows}行，截至 {best_end.strftime('%Y-%m-%d')}）"
     )
 
@@ -378,23 +341,27 @@ def detect_industry_etf(stock_name: str):
 
 
 def select_broad_etf(code: str, beta: float) -> dict:
+    """
+    根据输入股票的代码前缀和 Beta，选出对应的宽基ETF。
+    这是"输入股票 → 宽基ETF"映射的唯一入口。
+    """
     if code.startswith(("688", "689")):
         return {"code": "588000", "name": "科创50ETF", "index_name": "科创50",
-                "match_note": "科创板初选科创50"}
+                "match_note": "科创板（688/689）→ 科创50ETF"}
     if code.startswith("30"):
         return {"code": "159915", "name": "创业板ETF", "index_name": "创业板指",
-                "match_note": "创业板初选创业板指"}
+                "match_note": "创业板（30开头）→ 创业板ETF"}
     if code.startswith(("8", "4")):
         return {"code": "510300", "name": "300ETF", "index_name": "沪深300",
-                "match_note": "北交所无对应宽基期权，降级用沪深300"}
+                "match_note": "北交所（8/4开头）无对应宽基期权，降级用沪深300"}
     if beta >= 1.3:
         return {"code": "510500", "name": "500ETF", "index_name": "中证500",
-                "match_note": "高Beta初选中证500"}
+                "match_note": f"主板 + 高Beta（{beta:.2f}≥1.3）→ 中证500ETF"}
     if beta <= 0.8:
         return {"code": "510050", "name": "50ETF", "index_name": "上证50",
-                "match_note": "低Beta初选上证50"}
+                "match_note": f"主板 + 低Beta（{beta:.2f}≤0.8）→ 上证50ETF"}
     return {"code": "510300", "name": "300ETF", "index_name": "沪深300",
-            "match_note": "中等Beta初选沪深300"}
+            "match_note": f"主板 + 中等Beta（0.8<{beta:.2f}<1.3）→ 沪深300ETF"}
 
 
 def calc_correlation_r2(stock_df: pd.DataFrame, etf_df: pd.DataFrame,
@@ -600,8 +567,8 @@ def match_hedge(rating: str, market_value: float, qty: int,
     call_name = format_option_name(broad_etf["name"], "购", month, call_strike)
 
     match_line = (
-        f"匹配宽基：**{broad_etf['name']}（{broad_etf['code']}）**，"
-        f"跟踪 {broad_etf['index_name']}。"
+        f"输入股票 **{stock_name}（{stock_code}）** 对应宽基："
+        f"**{broad_etf['name']}（{broad_etf['code']}）**，跟踪 {broad_etf['index_name']}。"
         f"实际相关性：**r = {corr['r']}，R² = {corr['r2']}**"
         f"（{corr['n']} 个交易日），匹配度等级：**{grade['label']}**。"
     )
@@ -926,11 +893,15 @@ qty = col2.number_input("数量（股）", value=None, step=100,
                         placeholder="如 100")
 buy_date = col2.date_input("买入日期", value=None)
 
+if st.button("🔄 强制刷新数据源", help="清空缓存并重新向所有数据源发起请求"):
+    st.cache_data.clear()
+    st.rerun()
+
 if st.button("开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        with st.spinner("正在扫描全部数据源并汇总分析..."):
+        with st.spinner("正在向全部数据源并发取数并汇总..."):
             try:
                 code = code.strip()
                 qty = int(qty)
@@ -943,9 +914,10 @@ if st.button("开始分析"):
                 name = rt.get("name", code)
                 beta = calc_beta(stock_df, index_df)
 
+                # ---- 根据输入股票选择对应的宽基 ETF ----
                 broad_etf = select_broad_etf(code, beta)
 
-                # ---- 多源同时取数 ----
+                # ---- 用这个宽基 ETF 的代码向六个源取数 ----
                 multi = fetch_etf_daily_multi(broad_etf["code"], days=90)
                 etf_hist = multi["best_df"]
                 etf_source = multi["best_source"]
@@ -968,7 +940,17 @@ if st.button("开始分析"):
                     broad_etf=broad_etf, etf_price=etf_price, corr=corr,
                 )
 
-                # ---- 多源汇总展示 ----
+                # ---- 输入股票 → 宽基 ETF 映射说明 ----
+                st.subheader("【输入股票 → 宽基 ETF 映射】")
+                st.markdown(
+                    f"- **输入股票**：{name}（{code}）\n"
+                    f"- **判定依据**：{broad_etf['match_note']}\n"
+                    f"- **对应宽基 ETF**：**{broad_etf['name']}（{broad_etf['code']}）**\n"
+                    f"- **跟踪指数**：{broad_etf['index_name']}\n"
+                    f"- **用于取数的探测标的**：{broad_etf['code']}"
+                )
+
+                # ---- 多源结果汇总 ----
                 st.subheader("【数据源汇总】")
                 st.markdown(summary)
 
@@ -984,9 +966,7 @@ if st.button("开始分析"):
                         })
                     st.dataframe(pd.DataFrame(rows_src),
                                  use_container_width=True, hide_index=True)
-                    st.caption(
-                        "最优源选择规则：行数最多优先；行数相同则选结束日期最新的源。"
-                    )
+                    st.caption("最优源规则：行数最多优先；行数相同选结束日期最新的。")
 
                 st.subheader("【持仓概览】")
                 st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
@@ -1011,7 +991,8 @@ if st.button("开始分析"):
 
                 st.subheader("【宽基匹配度验证】")
                 st.write(
-                    f"规则初选：**{broad_etf['name']}（{broad_etf['code']}）**，"
+                    f"输入股票 **{name}（{code}）** 对应宽基："
+                    f"**{broad_etf['name']}（{broad_etf['code']}）**，"
                     f"跟踪 {broad_etf['index_name']}。{broad_etf['match_note']}。"
                 )
 
@@ -1034,7 +1015,8 @@ if st.button("开始分析"):
                     )
                 else:
                     st.warning(
-                        f"⚠️ 所有数据源均未能获取 {broad_etf['name']} 的有效历史日线，"
+                        f"⚠️ 全部 6 个数据源均未能获取 "
+                        f"{broad_etf['name']}（{broad_etf['code']}）的有效历史日线，"
                         f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选。"
                     )
 
