@@ -656,12 +656,20 @@ st.markdown("""
     padding: 10px 14px !important;
 }
 
-/* 日期选择器弹出日历：字体与买入价输入框一致（24px / 600） */
+/* ============================================================
+   日期选择器弹出日历：新的 React Aria 版本，用 stDateInputCalendar 定位
+   同时保留 baseweb 旧选择器做兼容
+   ============================================================ */
+[data-testid="stDateInputCalendar"],
+[data-testid="stDateInputCalendar"] *,
 [data-baseweb="calendar"],
 [data-baseweb="calendar"] * {
     font-size: 24px !important;
     font-weight: 600 !important;
 }
+
+[data-testid="stDateInputCalendar"] [role="gridcell"],
+[data-testid="stDateInputCalendar"] [role="gridcell"] div,
 [data-baseweb="calendar"] [role="gridcell"],
 [data-baseweb="calendar"] [role="gridcell"] div {
     min-width: 54px !important;
@@ -670,9 +678,17 @@ st.markdown("""
     font-size: 24px !important;
     font-weight: 600 !important;
 }
+
+[data-testid="stDateInputCalendar"] button,
 [data-baseweb="calendar"] button {
     font-size: 24px !important;
     font-weight: 600 !important;
+}
+
+/* React Aria 弹窗可能挂载到 portal 容器上，同步放大 */
+[data-testid="stDateInputCalendar"] [role="grid"],
+[data-testid="stDateInputCalendar"] [role="row"] {
+    font-size: 24px !important;
 }
 
 /* 开始分析按钮：金色大字 */
