@@ -32,7 +32,6 @@ def _to_sina_symbol(code: str) -> str:
 
 
 def _etf_to_sina_symbol(etf_code: str) -> str:
-    """ETF 代码转交易所前缀：5/51 开头沪市，15/16/18 开头深市"""
     if etf_code.startswith(("5", "51")):
         return f"sh{etf_code}"
     return f"sz{etf_code}"
@@ -61,7 +60,7 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
 
 
 # ============================================================
-# ETF 日线多源 fallback（东财 → 腾讯 → 新浪 → 同花顺 → stockdata-hub）
+# ETF 日线多源 fallback（东财 → 腾讯 → 新浪 → 同花顺 → quotekit → stockdata-hub）
 # ============================================================
 
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
@@ -99,8 +98,7 @@ def _fetch_etf_sina(etf_code: str, days: int) -> pd.DataFrame:
     返回全部历史，自己 tail 截取；不复权（短窗口相关性计算可接受）。
     """
     symbol = _etf_to_sina_symbol(etf_code)
-    # 位置参数，不是 ak.fund_etf_hist_sina(symbol=symbol)
-    df = ak.fund_etf_hist_sina(symbol)
+    df = ak.fund_etf_hist_sina(symbol)   # 位置参数，不是 symbol=symbol
     if df is None or df.empty:
         return pd.DataFrame()
     df["date"] = pd.to_datetime(df["date"])
@@ -109,19 +107,16 @@ def _fetch_etf_sina(etf_code: str, days: int) -> pd.DataFrame:
 
 def _fetch_etf_ths(etf_code: str, days: int) -> pd.DataFrame:
     """
-    同花顺公开行情直连（免登录，JSONP 格式）。
-    域名：d.10jqka.com.cn
-    路径：/v6/line/hs_{code}/01/last.js
-    data 字段：分号分隔的行，每行 12 个字段，第 5 个是 close。
+    同花顺公开行情直连（JSONP）。
+    关键修正：Referer 必须是 http://q.10jqka.com.cn/，否则 302 到错误页。
     """
-    # 同花顺的 market 前缀：hs（沪深）通用
     url = f"http://d.10jqka.com.cn/v6/line/hs_{etf_code}/01/last.js"
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         ),
-        "Referer": "http://stockpage.10jqka.com.cn/",
+        "Referer": "http://q.10jqka.com.cn/",   # 关键修正
     }
 
     try:
@@ -146,7 +141,7 @@ def _fetch_etf_ths(etf_code: str, days: int) -> pd.DataFrame:
                 try:
                     records.append({
                         "date": parts[0],
-                        "close": float(parts[4]),
+                        "close": float(parts[4]),   # 第 5 个字段是 close
                     })
                 except (ValueError, IndexError):
                     continue
@@ -163,11 +158,32 @@ def _fetch_etf_ths(etf_code: str, days: int) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _fetch_etf_quotekit(etf_code: str, days: int) -> pd.DataFrame:
+    """
+    quotekit：默认源 mootdx（通达信 TCP 协议），与东财/新浪/腾讯 HTTP 体系完全独立。
+    东财 HTTP 接口被限流时，TCP 线路通常不受影响。
+    """
+    try:
+        from quotekit import get_bars
+    except ImportError:
+        return pd.DataFrame()
+
+    try:
+        df = get_bars(etf_code, freq='day', limit=days, adjust='qfq')
+        if df is None or df.empty:
+            return pd.DataFrame()
+        # quotekit 返回列名含 code/date/open/high/low/close 等，取需要列
+        if "date" not in df.columns or "close" not in df.columns:
+            return pd.DataFrame()
+        df = df[["date", "close"]].copy()
+        df["date"] = pd.to_datetime(df["date"])
+        return df.sort_values("date").reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+
 def _fetch_etf_hub(etf_code: str, days: int) -> pd.DataFrame:
-    """
-    终极兜底：stockdata-hub 内置 11 个数据源，按优先级自动 fallback。
-    需要 pip install stockdata-hub[all]；未安装时静默跳过。
-    """
+    """终极兜底：stockdata-hub 内置多源自动 fallback；未安装时静默跳过"""
     try:
         from stockdata_hub import StockDataFetcher
     except ImportError:
@@ -177,9 +193,9 @@ def _fetch_etf_hub(etf_code: str, days: int) -> pd.DataFrame:
         fetcher = StockDataFetcher()
         df, reason, code = fetcher.fetch_daily_kline(etf_code, days=days)
         if df is not None and not df.empty:
-            df = df.rename(columns={"date": "date", "close": "close"})
-            df["date"] = pd.to_datetime(df["date"])
-            return df[["date", "close"]].sort_values("date").reset_index(drop=True)
+            if "date" in df.columns and "close" in df.columns:
+                df["date"] = pd.to_datetime(df["date"])
+                return df[["date", "close"]].sort_values("date").reset_index(drop=True)
     except Exception:
         pass
     return pd.DataFrame()
@@ -188,15 +204,16 @@ def _fetch_etf_hub(etf_code: str, days: int) -> pd.DataFrame:
 @st.cache_data(ttl=1800)
 def fetch_etf_daily(etf_code: str, days: int = 120) -> tuple:
     """
-    自动按优先级尝试 5 个数据源，命中即返回。
+    自动按优先级尝试 6 个数据源，命中即返回。
     返回 (DataFrame, 实际命中的数据源名称)。
-    全部失败返回 (空 DataFrame, "全部失败")。
+    全部失败返回 (空 DataFrame, "全部失败（原因列表）")。
     """
     sources = [
         ("东财", _fetch_etf_em),
         ("腾讯", _fetch_etf_tx),
         ("新浪", _fetch_etf_sina),
         ("同花顺", _fetch_etf_ths),
+        ("quotekit", _fetch_etf_quotekit),
         ("stockdata-hub", _fetch_etf_hub),
     ]
 
@@ -210,7 +227,7 @@ def fetch_etf_daily(etf_code: str, days: int = 120) -> tuple:
         except Exception as e:
             errors.append(f"{name}: {e}")
             continue
-        time.sleep(0.8)  # 源之间短暂间隔，降低连续高频被限风险
+        time.sleep(0.8)   # 源之间短暂间隔，降低连续高频被限风险
 
     return pd.DataFrame(), "全部失败（" + "；".join(errors) + "）"
 
@@ -917,7 +934,7 @@ if st.button("开始分析"):
                     )
                 else:
                     st.warning(
-                        f"⚠️ 五个数据源（东财、腾讯、新浪、同花顺、stockdata-hub）"
+                        f"⚠️ 六个数据源（东财、腾讯、新浪、同花顺、quotekit、stockdata-hub）"
                         f"均未能获取 {broad_etf['name']} 的历史日线，无法计算实际相关性。"
                         f"下方期权建议仅基于 Beta 和规则初选。"
                     )
