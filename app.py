@@ -10,24 +10,33 @@ import requests
 from requests.exceptions import ConnectionError, Timeout
 
 # ============================================================
-# 交易日判断工具
+# 交易日判断（支持周末 + 中国法定节假日）
 # ============================================================
 
+try:
+    from tj_calendar import is_trade_day
+    _CALENDAR_AVAILABLE = True
+except ImportError:
+    _CALENDAR_AVAILABLE = False
+
 def get_latest_trading_day() -> date:
-    """
-    如果今天是周六或周日，自动回退到最近的周五；否则返回今天。
-    用于避免在非交易日请求日线数据时拿到空结果。
-    """
+    """返回最近的A股交易日，自动跳过周末与法定节假日。"""
     today = datetime.today().date()
-    if today.weekday() == 5:          # 周六
-        return today - timedelta(days=1)
-    if today.weekday() == 6:          # 周日
-        return today - timedelta(days=2)
+    if not _CALENDAR_AVAILABLE:
+        while today.weekday() >= 5:
+            today -= timedelta(days=1)
+        return today
+
+    current = today
+    for _ in range(30):
+        if is_trade_day(current):
+            return current
+        current -= timedelta(days=1)
     return today
 
 
 def get_date_range(days: int) -> tuple:
-    """返回 (start_date, end_date) 字符串，end 为最近交易日，start 向前推 days*2 天"""
+    """返回 (start_date, end_date)，end 为最近交易日。"""
     end_day = get_latest_trading_day()
     start_day = end_day - timedelta(days=days * 2)
     return start_day.strftime("%Y%m%d"), end_day.strftime("%Y%m%d")
@@ -64,7 +73,7 @@ def _etf_to_sina_symbol(etf_code: str) -> str:
 @st.cache_data(ttl=1800)
 def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
     symbol = _to_sina_symbol(code)
-    start, end = get_date_range(days)   # 使用最近交易日作为结束日
+    start, end = get_date_range(days)
 
     df = fetch_with_retry(
         ak.stock_zh_a_daily,
@@ -83,7 +92,7 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
 
 
 # ============================================================
-# ETF 日线多源 fallback（各源独立函数）
+# ETF 日线多源 fallback
 # ============================================================
 
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
@@ -203,13 +212,7 @@ ALL_SOURCES = [
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def detect_available_etf_sources(probe_code: str = "510300") -> tuple:
-    """
-    逐一探测所有 ETF 数据源是否可用，返回 (可用源列表, 探测详情)。
-    严格验证：必须返回非空且包含至少 10 行数据的 DataFrame。
-    """
-    available = []
-    details = []
-
+    available, details = [], []
     for name, func in ALL_SOURCES:
         try:
             df = func(probe_code, days=30)
@@ -221,16 +224,11 @@ def detect_available_etf_sources(probe_code: str = "510300") -> tuple:
         except Exception as e:
             details.append(f"❌ {name}: {str(e)[:60]}")
         time.sleep(0.5)
-
     return available, details
 
 
 @st.cache_data(ttl=1800)
 def fetch_etf_daily(etf_code: str, days: int = 120) -> tuple:
-    """
-    使用自检结果获取 ETF 日线。
-    如果自检有可用源，按可用源顺序尝试；否则回退到全量源列表。
-    """
     available, _ = detect_available_etf_sources()
     sources_to_try = available if available else ALL_SOURCES
 
@@ -245,7 +243,6 @@ def fetch_etf_daily(etf_code: str, days: int = 120) -> tuple:
             errors.append(f"{name}: {e}")
             continue
         time.sleep(0.8)
-
     return pd.DataFrame(), "全部失败（" + "；".join(errors) + "）"
 
 
@@ -862,9 +859,9 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 显示当前使用的分析日期（最近交易日）
 latest_td = get_latest_trading_day()
-st.caption(f"当前分析基准日：**{latest_td.strftime('%Y-%m-%d')}**（自动跳过周末）")
+cal_note = "（已跳过周末与法定节假日）" if _CALENDAR_AVAILABLE else "（⚠️ 日历库未安装，仅跳过周末）"
+st.caption(f"当前分析基准日：**{latest_td.strftime('%Y-%m-%d')}** {cal_note}")
 
 col1, col2 = st.columns(2)
 code = col1.text_input("股票代码", "")
