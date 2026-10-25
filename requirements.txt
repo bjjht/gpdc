@@ -3,5 +3,6 @@ akshare
 pandas
 numpy
 requests
+tj-calendar
 quotekit
 stockdata-hub[all]
