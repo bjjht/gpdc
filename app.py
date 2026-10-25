@@ -60,11 +60,10 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
 
 
 # ============================================================
-# ETF 日线多源 fallback（东财 → 腾讯 → 新浪 → 同花顺 → quotekit → stockdata-hub）
+# ETF 日线多源 fallback（各源独立函数）
 # ============================================================
 
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
-    """东财：列名中文，需要重命名"""
     end = datetime.today().strftime("%Y%m%d")
     start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
     df = ak.fund_etf_hist_em(
@@ -79,7 +78,6 @@ def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
 
 
 def _fetch_etf_tx(etf_code: str, days: int) -> pd.DataFrame:
-    """腾讯：需要带交易所前缀，支持复权"""
     symbol = _etf_to_sina_symbol(etf_code)
     end = datetime.today().strftime("%Y%m%d")
     start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
@@ -93,12 +91,8 @@ def _fetch_etf_tx(etf_code: str, days: int) -> pd.DataFrame:
 
 
 def _fetch_etf_sina(etf_code: str, days: int) -> pd.DataFrame:
-    """
-    新浪：关键修正——只接受位置参数，不能用 symbol= 关键字。
-    返回全部历史，自己 tail 截取；不复权（短窗口相关性计算可接受）。
-    """
     symbol = _etf_to_sina_symbol(etf_code)
-    df = ak.fund_etf_hist_sina(symbol)   # 位置参数，不是 symbol=symbol
+    df = ak.fund_etf_hist_sina(symbol)   # 位置参数
     if df is None or df.empty:
         return pd.DataFrame()
     df["date"] = pd.to_datetime(df["date"])
@@ -106,74 +100,48 @@ def _fetch_etf_sina(etf_code: str, days: int) -> pd.DataFrame:
 
 
 def _fetch_etf_ths(etf_code: str, days: int) -> pd.DataFrame:
-    """
-    同花顺公开行情直连（JSONP）。
-    关键修正：Referer 必须是 http://q.10jqka.com.cn/，否则 302 到错误页。
-    """
     url = f"http://d.10jqka.com.cn/v6/line/hs_{etf_code}/01/last.js"
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Referer": "http://q.10jqka.com.cn/",   # 关键修正
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "http://q.10jqka.com.cn/",
     }
-
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         text = resp.text
-
-        # JSONP 剥壳：取第一个 '(' 到最后一个 ')' 之间的 JSON
         m = re.search(r"\((\{.*\})\)", text, re.DOTALL)
         if not m:
             return pd.DataFrame()
-
         payload = json.loads(m.group(1))
         rows_str = payload.get("data", "")
         if not rows_str:
             return pd.DataFrame()
-
         records = []
         for line in rows_str.split(";"):
             parts = line.split(",")
             if len(parts) >= 5:
                 try:
-                    records.append({
-                        "date": parts[0],
-                        "close": float(parts[4]),   # 第 5 个字段是 close
-                    })
+                    records.append({"date": parts[0], "close": float(parts[4])})
                 except (ValueError, IndexError):
                     continue
-
         if not records:
             return pd.DataFrame()
-
         df = pd.DataFrame(records)
         df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
         df = df.dropna(subset=["date"]).sort_values("date")
         return df[["date", "close"]].tail(days).reset_index(drop=True)
-
     except Exception:
         return pd.DataFrame()
 
 
 def _fetch_etf_quotekit(etf_code: str, days: int) -> pd.DataFrame:
-    """
-    quotekit：默认源 mootdx（通达信 TCP 协议），与东财/新浪/腾讯 HTTP 体系完全独立。
-    东财 HTTP 接口被限流时，TCP 线路通常不受影响。
-    """
     try:
         from quotekit import get_bars
     except ImportError:
         return pd.DataFrame()
-
     try:
         df = get_bars(etf_code, freq='day', limit=days, adjust='qfq')
-        if df is None or df.empty:
-            return pd.DataFrame()
-        # quotekit 返回列名含 code/date/open/high/low/close 等，取需要列
-        if "date" not in df.columns or "close" not in df.columns:
+        if df is None or df.empty or "date" not in df.columns or "close" not in df.columns:
             return pd.DataFrame()
         df = df[["date", "close"]].copy()
         df["date"] = pd.to_datetime(df["date"])
@@ -183,42 +151,71 @@ def _fetch_etf_quotekit(etf_code: str, days: int) -> pd.DataFrame:
 
 
 def _fetch_etf_hub(etf_code: str, days: int) -> pd.DataFrame:
-    """终极兜底：stockdata-hub 内置多源自动 fallback；未安装时静默跳过"""
     try:
         from stockdata_hub import StockDataFetcher
     except ImportError:
         return pd.DataFrame()
-
     try:
         fetcher = StockDataFetcher()
         df, reason, code = fetcher.fetch_daily_kline(etf_code, days=days)
-        if df is not None and not df.empty:
-            if "date" in df.columns and "close" in df.columns:
-                df["date"] = pd.to_datetime(df["date"])
-                return df[["date", "close"]].sort_values("date").reset_index(drop=True)
+        if df is not None and not df.empty and "date" in df.columns and "close" in df.columns:
+            df["date"] = pd.to_datetime(df["date"])
+            return df[["date", "close"]].sort_values("date").reset_index(drop=True)
     except Exception:
         pass
     return pd.DataFrame()
 
 
+# ============================================================
+# 数据源自检 + 自动选择
+# ============================================================
+
+ALL_SOURCES = [
+    ("东财", _fetch_etf_em),
+    ("腾讯", _fetch_etf_tx),
+    ("新浪", _fetch_etf_sina),
+    ("同花顺", _fetch_etf_ths),
+    ("quotekit", _fetch_etf_quotekit),
+    ("stockdata-hub", _fetch_etf_hub),
+]
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def detect_available_etf_sources(probe_code: str = "510300") -> tuple:
+    """
+    逐一探测所有 ETF 数据源是否可用，返回 (可用源列表, 探测详情)。
+    严格验证：必须返回非空且包含至少 10 行数据的 DataFrame。
+    """
+    available = []
+    details = []
+
+    for name, func in ALL_SOURCES:
+        try:
+            df = func(probe_code, days=30)
+            if df is not None and not df.empty and len(df) >= 10:
+                available.append((name, func))
+                details.append(f"✅ {name}: 可用（{len(df)}行）")
+            else:
+                details.append(f"❌ {name}: 返回空或数据不足")
+        except Exception as e:
+            details.append(f"❌ {name}: {str(e)[:60]}")
+        time.sleep(0.5)   # 探测间隔，避免触发限流
+
+    return available, details
+
+
 @st.cache_data(ttl=1800)
 def fetch_etf_daily(etf_code: str, days: int = 120) -> tuple:
     """
-    自动按优先级尝试 6 个数据源，命中即返回。
-    返回 (DataFrame, 实际命中的数据源名称)。
-    全部失败返回 (空 DataFrame, "全部失败（原因列表）")。
+    使用自检结果获取 ETF 日线。
+    如果自检有可用源，按可用源顺序尝试；否则回退到全量源列表。
     """
-    sources = [
-        ("东财", _fetch_etf_em),
-        ("腾讯", _fetch_etf_tx),
-        ("新浪", _fetch_etf_sina),
-        ("同花顺", _fetch_etf_ths),
-        ("quotekit", _fetch_etf_quotekit),
-        ("stockdata-hub", _fetch_etf_hub),
-    ]
+    available, _ = detect_available_etf_sources()
+
+    sources_to_try = available if available else ALL_SOURCES
 
     errors = []
-    for name, func in sources:
+    for name, func in sources_to_try:
         try:
             df = fetch_with_retry(func, etf_code, days, retries=1, delay=1)
             if df is not None and not df.empty and len(df) >= 30:
@@ -227,7 +224,7 @@ def fetch_etf_daily(etf_code: str, days: int = 120) -> tuple:
         except Exception as e:
             errors.append(f"{name}: {e}")
             continue
-        time.sleep(0.8)   # 源之间短暂间隔，降低连续高频被限风险
+        time.sleep(0.8)
 
     return pd.DataFrame(), "全部失败（" + "；".join(errors) + "）"
 
@@ -857,7 +854,7 @@ if st.button("开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        with st.spinner("在运算请稍等..."):
+        with st.spinner("正在扫描可用数据源并分析..."):
             try:
                 code = code.strip()
                 qty = int(qty)
@@ -871,6 +868,16 @@ if st.button("开始分析"):
                 beta = calc_beta(stock_df, index_df)
 
                 broad_etf = select_broad_etf(code, beta)
+
+                # ---- 数据源自检 ----
+                available_sources, probe_details = detect_available_etf_sources()
+
+                if available_sources:
+                    st.success(f"数据源自检完成：{len(available_sources)} 个源可用")
+                else:
+                    st.warning("⚠️ 所有ETF数据源均探测失败，相关性验证可能无法完成。")
+
+                # 用自检结果获取ETF日线
                 etf_hist, etf_source = fetch_etf_daily(broad_etf["code"], days=90)
                 corr = calc_correlation_r2(stock_df, etf_hist, window=60)
                 grade = r2_grade(corr["r2"])
@@ -887,6 +894,11 @@ if st.button("开始分析"):
                     stock_code=code, stock_name=name,
                     broad_etf=broad_etf, etf_price=etf_price, corr=corr,
                 )
+
+                # ---- 数据源状态详情（可折叠） ----
+                with st.expander("🔍 数据源自检详情", expanded=False):
+                    for line in probe_details:
+                        st.write(line)
 
                 st.subheader("【持仓概览】")
                 st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
@@ -934,11 +946,10 @@ if st.button("开始分析"):
                     )
                 else:
                     st.warning(
-                        f"⚠️ 六个数据源（东财、腾讯、新浪、同花顺、quotekit、stockdata-hub）"
-                        f"均未能获取 {broad_etf['name']} 的历史日线，无法计算实际相关性。"
-                        f"下方期权建议仅基于 Beta 和规则初选。"
+                        f"⚠️ 当前可用数据源均未能获取 {broad_etf['name']} 的历史日线，"
+                        f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选。"
                     )
-                    st.caption(f"各源失败原因：{etf_source}")
+                    st.caption(f"失败详情：{etf_source}")
 
                 st.subheader("【工具匹配 · 具体执行指令】")
                 opts = hedge.get("options", [])
