@@ -7,6 +7,7 @@ import time
 import json
 import re
 import requests
+import concurrent.futures
 from requests.exceptions import ConnectionError, Timeout
 
 # ============================================================
@@ -202,47 +203,65 @@ ALL_SOURCES = [
 
 
 # ============================================================
-# 多源同时取数（对输入股票对应的宽基ETF）
+# 多源并发取数：按“最快返回有效数据”选最优源
 # ============================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
     """
-    对全部 6 个数据源，用传入的 etf_code（来自 select_broad_etf 选出的、
-    与输入股票对应的宽基ETF）逐一取数，每个源独立记录结果。
-    最优源：行数最多 + 结束日期最新。
+    并发向全部 6 个数据源发请求，按完成顺序收集结果。
+    最优源 = 完成顺序里第一个返回有效数据（非空且 ≥30 行）的源。
+    等所有源都完成后统一返回，保证“每个源的结果”表格完整。
     """
     all_results = {}
-    valid = []
+    valid_in_order = []   # (完成序号, name, df, rows, end_date)
 
-    for name, func in ALL_SOURCES:
+    def _run_one(name, func):
         try:
             df = fetch_with_retry(func, etf_code, days, retries=1, delay=1)
-            if df is not None and not df.empty and len(df) >= 30:
-                df = df.sort_values("date").reset_index(drop=True)
-                rows = len(df)
-                start_d = df["date"].min()
-                end_d = df["date"].max()
-                all_results[name] = {
-                    "rows": rows,
-                    "start": start_d.strftime("%Y-%m-%d"),
-                    "end": end_d.strftime("%Y-%m-%d"),
-                    "status": "✅ 成功",
-                }
-                valid.append((name, df, rows, end_d))
-            else:
+            return name, df, None
+        except Exception as e:
+            return name, None, str(e)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ALL_SOURCES)) as executor:
+        futures = {executor.submit(_run_one, name, func): name for name, func in ALL_SOURCES}
+        seq = 0
+        for future in concurrent.futures.as_completed(futures):
+            seq += 1
+            try:
+                name, df, err = future.result()
+            except Exception as e:
+                name = futures[future]
+                df, err = None, str(e)
+
+            if err:
                 all_results[name] = {
                     "rows": 0, "start": "-", "end": "-",
-                    "status": "⚠️ 空或数据不足",
+                    "status": f"❌ {err[:50]}", "order": seq,
                 }
-        except Exception as e:
-            all_results[name] = {
-                "rows": 0, "start": "-", "end": "-",
-                "status": f"❌ {str(e)[:50]}",
-            }
-        time.sleep(0.6)
+                continue
 
-    if not valid:
+            if df is None or df.empty or len(df) < 30:
+                all_results[name] = {
+                    "rows": 0, "start": "-", "end": "-",
+                    "status": "⚠️ 空或数据不足", "order": seq,
+                }
+                continue
+
+            df = df.sort_values("date").reset_index(drop=True)
+            rows = len(df)
+            start_d = df["date"].min()
+            end_d = df["date"].max()
+            all_results[name] = {
+                "rows": rows,
+                "start": start_d.strftime("%Y-%m-%d"),
+                "end": end_d.strftime("%Y-%m-%d"),
+                "status": "✅ 成功",
+                "order": seq,
+            }
+            valid_in_order.append((seq, name, df, rows, end_d))
+
+    if not valid_in_order:
         return {
             "best_source": "无可用源",
             "best_df": pd.DataFrame(),
@@ -250,12 +269,14 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
             "summary": f"⚠️ 全部 {len(ALL_SOURCES)} 个数据源均未返回 {etf_code} 的有效数据。",
         }
 
-    valid.sort(key=lambda x: (-x[2], -x[3].timestamp()))
-    best_name, best_df, best_rows, best_end = valid[0]
+    # 已按 as_completed 的完成顺序追加，valid_in_order[0] 就是最快返回有效数据的源
+    valid_in_order.sort(key=lambda x: x[0])
+    best_seq, best_name, best_df, best_rows, best_end = valid_in_order[0]
 
     summary = (
-        f"探测标的：**{etf_code}**；共 **{len(valid)}/{len(ALL_SOURCES)}** 个源返回有效数据；"
-        f"最优源：**{best_name}**（{best_rows}行，截至 {best_end.strftime('%Y-%m-%d')}）"
+        f"探测标的：**{etf_code}**；共 **{len(valid_in_order)}/{len(ALL_SOURCES)}** 个源返回有效数据；"
+        f"最快有效源：**{best_name}**"
+        f"（第 {best_seq} 个完成，{best_rows}行，截至 {best_end.strftime('%Y-%m-%d')}）"
     )
 
     return {
@@ -341,10 +362,6 @@ def detect_industry_etf(stock_name: str):
 
 
 def select_broad_etf(code: str, beta: float) -> dict:
-    """
-    根据输入股票的代码前缀和 Beta，选出对应的宽基ETF。
-    这是"输入股票 → 宽基ETF"映射的唯一入口。
-    """
     if code.startswith(("688", "689")):
         return {"code": "588000", "name": "科创50ETF", "index_name": "科创50",
                 "match_note": "科创板（688/689）→ 科创50ETF"}
@@ -901,7 +918,7 @@ if st.button("开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        with st.spinner("正在向全部数据源并发取数并汇总..."):
+        with st.spinner("正在并发向全部数据源取数并汇总..."):
             try:
                 code = code.strip()
                 qty = int(qty)
@@ -914,10 +931,8 @@ if st.button("开始分析"):
                 name = rt.get("name", code)
                 beta = calc_beta(stock_df, index_df)
 
-                # ---- 根据输入股票选择对应的宽基 ETF ----
                 broad_etf = select_broad_etf(code, beta)
 
-                # ---- 用这个宽基 ETF 的代码向六个源取数 ----
                 multi = fetch_etf_daily_multi(broad_etf["code"], days=90)
                 etf_hist = multi["best_df"]
                 etf_source = multi["best_source"]
@@ -950,23 +965,28 @@ if st.button("开始分析"):
                     f"- **用于取数的探测标的**：{broad_etf['code']}"
                 )
 
-                # ---- 多源结果汇总 ----
+                # ---- 多源结果汇总（按完成顺序展示） ----
                 st.subheader("【数据源汇总】")
                 st.markdown(summary)
 
-                with st.expander("📋 每个数据源的详细结果", expanded=False):
+                with st.expander("📋 每个数据源的详细结果（按完成顺序）", expanded=False):
                     rows_src = []
                     for src_name, info in all_results.items():
                         rows_src.append({
+                            "完成序号": info.get("order", "-"),
                             "数据源": src_name,
                             "状态": info["status"],
                             "行数": info["rows"],
                             "起始日": info["start"],
                             "结束日": info["end"],
                         })
-                    st.dataframe(pd.DataFrame(rows_src),
-                                 use_container_width=True, hide_index=True)
-                    st.caption("最优源规则：行数最多优先；行数相同选结束日期最新的。")
+                    df_src = pd.DataFrame(rows_src).sort_values("完成序号")
+                    st.dataframe(df_src, use_container_width=True, hide_index=True)
+                    st.caption(
+                        "最优源规则：**并发请求所有源，按完成顺序排序，"
+                        "第一个返回有效数据（非空且≥30行）的源即为最优源。**"
+                        "完成序号越小，说明该源返回得越快。"
+                    )
 
                 st.subheader("【持仓概览】")
                 st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
@@ -1010,7 +1030,7 @@ if st.button("开始分析"):
                         st.error(f"❌ {grade['meaning']}")
 
                     st.caption(
-                        f"使用最优源：**{etf_source}**。"
+                        f"使用最快有效源：**{etf_source}**。"
                         f"基于最近 {corr['n']} 个交易日的日收益率对齐计算。"
                     )
                 else:
