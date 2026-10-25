@@ -2,12 +2,36 @@ import streamlit as st
 import akshare as ak
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import time
 import json
 import re
 import requests
 from requests.exceptions import ConnectionError, Timeout
+
+# ============================================================
+# 交易日判断工具
+# ============================================================
+
+def get_latest_trading_day() -> date:
+    """
+    如果今天是周六或周日，自动回退到最近的周五；否则返回今天。
+    用于避免在非交易日请求日线数据时拿到空结果。
+    """
+    today = datetime.today().date()
+    if today.weekday() == 5:          # 周六
+        return today - timedelta(days=1)
+    if today.weekday() == 6:          # 周日
+        return today - timedelta(days=2)
+    return today
+
+
+def get_date_range(days: int) -> tuple:
+    """返回 (start_date, end_date) 字符串，end 为最近交易日，start 向前推 days*2 天"""
+    end_day = get_latest_trading_day()
+    start_day = end_day - timedelta(days=days * 2)
+    return start_day.strftime("%Y%m%d"), end_day.strftime("%Y%m%d")
+
 
 # ============================================================
 # 数据层
@@ -40,8 +64,7 @@ def _etf_to_sina_symbol(etf_code: str) -> str:
 @st.cache_data(ttl=1800)
 def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
     symbol = _to_sina_symbol(code)
-    end = datetime.today().strftime("%Y%m%d")
-    start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
+    start, end = get_date_range(days)   # 使用最近交易日作为结束日
 
     df = fetch_with_retry(
         ak.stock_zh_a_daily,
@@ -64,8 +87,7 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
 # ============================================================
 
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
-    end = datetime.today().strftime("%Y%m%d")
-    start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
+    start, end = get_date_range(days)
     df = ak.fund_etf_hist_em(
         symbol=etf_code, period="daily",
         start_date=start, end_date=end, adjust="qfq"
@@ -79,8 +101,7 @@ def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
 
 def _fetch_etf_tx(etf_code: str, days: int) -> pd.DataFrame:
     symbol = _etf_to_sina_symbol(etf_code)
-    end = datetime.today().strftime("%Y%m%d")
-    start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
+    start, end = get_date_range(days)
     df = ak.stock_zh_a_hist_tx(
         symbol=symbol, start_date=start, end_date=end, adjust="qfq"
     )
@@ -199,7 +220,7 @@ def detect_available_etf_sources(probe_code: str = "510300") -> tuple:
                 details.append(f"❌ {name}: 返回空或数据不足")
         except Exception as e:
             details.append(f"❌ {name}: {str(e)[:60]}")
-        time.sleep(0.5)   # 探测间隔，避免触发限流
+        time.sleep(0.5)
 
     return available, details
 
@@ -211,7 +232,6 @@ def fetch_etf_daily(etf_code: str, days: int = 120) -> tuple:
     如果自检有可用源，按可用源顺序尝试；否则回退到全量源列表。
     """
     available, _ = detect_available_etf_sources()
-
     sources_to_try = available if available else ALL_SOURCES
 
     errors = []
@@ -230,7 +250,7 @@ def fetch_etf_daily(etf_code: str, days: int = 120) -> tuple:
 
 
 # ============================================================
-# 其余数据层（指数、实时、行业映射、宽基选择、相关性）
+# 其余数据层
 # ============================================================
 
 @st.cache_data(ttl=1800)
@@ -842,6 +862,10 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# 显示当前使用的分析日期（最近交易日）
+latest_td = get_latest_trading_day()
+st.caption(f"当前分析基准日：**{latest_td.strftime('%Y-%m-%d')}**（自动跳过周末）")
+
 col1, col2 = st.columns(2)
 code = col1.text_input("股票代码", "")
 buy_price = col1.number_input("买入价", value=None, step=0.01,
@@ -869,15 +893,12 @@ if st.button("开始分析"):
 
                 broad_etf = select_broad_etf(code, beta)
 
-                # ---- 数据源自检 ----
                 available_sources, probe_details = detect_available_etf_sources()
-
                 if available_sources:
                     st.success(f"数据源自检完成：{len(available_sources)} 个源可用")
                 else:
                     st.warning("⚠️ 所有ETF数据源均探测失败，相关性验证可能无法完成。")
 
-                # 用自检结果获取ETF日线
                 etf_hist, etf_source = fetch_etf_daily(broad_etf["code"], days=90)
                 corr = calc_correlation_r2(stock_df, etf_hist, window=60)
                 grade = r2_grade(corr["r2"])
@@ -895,7 +916,6 @@ if st.button("开始分析"):
                     broad_etf=broad_etf, etf_price=etf_price, corr=corr,
                 )
 
-                # ---- 数据源状态详情（可折叠） ----
                 with st.expander("🔍 数据源自检详情", expanded=False):
                     for line in probe_details:
                         st.write(line)
