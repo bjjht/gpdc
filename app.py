@@ -601,12 +601,12 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
 
 # ============================================================
-# 主界面（固定老年人大字样式）
+# 主界面（固定老年人大字样式，日历尺寸收敛）
 # ============================================================
 
 st.set_page_config(page_title="对冲分析助手", layout="centered")
 
-# ---- 固定老年人大字样式 + 彻底隐藏 Running ----
+# ---- 固定样式 ----
 st.markdown("""
 <style>
 /* 彻底隐藏所有版本的 Running 指示器 */
@@ -657,14 +657,14 @@ st.markdown("""
 }
 
 /* ============================================================
-   日期选择器弹出日历：新的 React Aria 版本，用 stDateInputCalendar 定位
-   同时保留 baseweb 旧选择器做兼容
+   日期选择器弹出日历：字号 18px，格子 40×40（整体收敛，不再过大）
+   兼容新的 stDateInputCalendar 和旧 baseweb 选择器
    ============================================================ */
 [data-testid="stDateInputCalendar"],
 [data-testid="stDateInputCalendar"] *,
 [data-baseweb="calendar"],
 [data-baseweb="calendar"] * {
-    font-size: 24px !important;
+    font-size: 18px !important;
     font-weight: 600 !important;
 }
 
@@ -672,23 +672,22 @@ st.markdown("""
 [data-testid="stDateInputCalendar"] [role="gridcell"] div,
 [data-baseweb="calendar"] [role="gridcell"],
 [data-baseweb="calendar"] [role="gridcell"] div {
-    min-width: 54px !important;
-    min-height: 54px !important;
-    line-height: 54px !important;
-    font-size: 24px !important;
+    min-width: 40px !important;
+    min-height: 40px !important;
+    line-height: 40px !important;
+    font-size: 18px !important;
     font-weight: 600 !important;
 }
 
 [data-testid="stDateInputCalendar"] button,
 [data-baseweb="calendar"] button {
-    font-size: 24px !important;
+    font-size: 18px !important;
     font-weight: 600 !important;
 }
 
-/* React Aria 弹窗可能挂载到 portal 容器上，同步放大 */
 [data-testid="stDateInputCalendar"] [role="grid"],
 [data-testid="stDateInputCalendar"] [role="row"] {
-    font-size: 24px !important;
+    font-size: 18px !important;
 }
 
 /* 开始分析按钮：金色大字 */
