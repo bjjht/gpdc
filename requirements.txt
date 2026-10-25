@@ -4,5 +4,6 @@ pandas
 numpy
 requests
 tj-calendar
+akshare-proxy-patch==0.5.0
 quotekit
 stockdata-hub[all]
