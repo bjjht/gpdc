@@ -3,4 +3,5 @@ akshare
 pandas
 numpy
 requests
+quotekit
 stockdata-hub[all]
