@@ -4,6 +4,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, date
 import time
+import json
+import re
+import requests
 from requests.exceptions import ConnectionError, Timeout
 
 # ============================================================
@@ -29,6 +32,7 @@ def _to_sina_symbol(code: str) -> str:
 
 
 def _etf_to_sina_symbol(etf_code: str) -> str:
+    """ETF 代码转交易所前缀：5/51 开头沪市，15/16/18 开头深市"""
     if etf_code.startswith(("5", "51")):
         return f"sh{etf_code}"
     return f"sz{etf_code}"
@@ -56,7 +60,12 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
+# ============================================================
+# ETF 日线多源 fallback（东财 → 腾讯 → 新浪 → 同花顺 → stockdata-hub）
+# ============================================================
+
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
+    """东财：列名中文，需要重命名"""
     end = datetime.today().strftime("%Y%m%d")
     start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
     df = ak.fund_etf_hist_em(
@@ -71,6 +80,7 @@ def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
 
 
 def _fetch_etf_tx(etf_code: str, days: int) -> pd.DataFrame:
+    """腾讯：需要带交易所前缀，支持复权"""
     symbol = _etf_to_sina_symbol(etf_code)
     end = datetime.today().strftime("%Y%m%d")
     start = (datetime.today() - pd.Timedelta(days=days * 2)).strftime("%Y%m%d")
@@ -84,27 +94,130 @@ def _fetch_etf_tx(etf_code: str, days: int) -> pd.DataFrame:
 
 
 def _fetch_etf_sina(etf_code: str, days: int) -> pd.DataFrame:
+    """
+    新浪：关键修正——只接受位置参数，不能用 symbol= 关键字。
+    返回全部历史，自己 tail 截取；不复权（短窗口相关性计算可接受）。
+    """
     symbol = _etf_to_sina_symbol(etf_code)
-    df = ak.fund_etf_hist_sina(symbol=symbol)
+    # 位置参数，不是 ak.fund_etf_hist_sina(symbol=symbol)
+    df = ak.fund_etf_hist_sina(symbol)
     if df is None or df.empty:
         return pd.DataFrame()
     df["date"] = pd.to_datetime(df["date"])
     return df[["date", "close"]].tail(days).reset_index(drop=True)
 
 
+def _fetch_etf_ths(etf_code: str, days: int) -> pd.DataFrame:
+    """
+    同花顺公开行情直连（免登录，JSONP 格式）。
+    域名：d.10jqka.com.cn
+    路径：/v6/line/hs_{code}/01/last.js
+    data 字段：分号分隔的行，每行 12 个字段，第 5 个是 close。
+    """
+    # 同花顺的 market 前缀：hs（沪深）通用
+    url = f"http://d.10jqka.com.cn/v6/line/hs_{etf_code}/01/last.js"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Referer": "http://stockpage.10jqka.com.cn/",
+    }
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        text = resp.text
+
+        # JSONP 剥壳：取第一个 '(' 到最后一个 ')' 之间的 JSON
+        m = re.search(r"\((\{.*\})\)", text, re.DOTALL)
+        if not m:
+            return pd.DataFrame()
+
+        payload = json.loads(m.group(1))
+        rows_str = payload.get("data", "")
+        if not rows_str:
+            return pd.DataFrame()
+
+        records = []
+        for line in rows_str.split(";"):
+            parts = line.split(",")
+            if len(parts) >= 5:
+                try:
+                    records.append({
+                        "date": parts[0],
+                        "close": float(parts[4]),
+                    })
+                except (ValueError, IndexError):
+                    continue
+
+        if not records:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(records)
+        df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
+        df = df.dropna(subset=["date"]).sort_values("date")
+        return df[["date", "close"]].tail(days).reset_index(drop=True)
+
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fetch_etf_hub(etf_code: str, days: int) -> pd.DataFrame:
+    """
+    终极兜底：stockdata-hub 内置 11 个数据源，按优先级自动 fallback。
+    需要 pip install stockdata-hub[all]；未安装时静默跳过。
+    """
+    try:
+        from stockdata_hub import StockDataFetcher
+    except ImportError:
+        return pd.DataFrame()
+
+    try:
+        fetcher = StockDataFetcher()
+        df, reason, code = fetcher.fetch_daily_kline(etf_code, days=days)
+        if df is not None and not df.empty:
+            df = df.rename(columns={"date": "date", "close": "close"})
+            df["date"] = pd.to_datetime(df["date"])
+            return df[["date", "close"]].sort_values("date").reset_index(drop=True)
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
 @st.cache_data(ttl=1800)
 def fetch_etf_daily(etf_code: str, days: int = 120) -> tuple:
-    sources = [("东财", _fetch_etf_em), ("腾讯", _fetch_etf_tx), ("新浪", _fetch_etf_sina)]
+    """
+    自动按优先级尝试 5 个数据源，命中即返回。
+    返回 (DataFrame, 实际命中的数据源名称)。
+    全部失败返回 (空 DataFrame, "全部失败")。
+    """
+    sources = [
+        ("东财", _fetch_etf_em),
+        ("腾讯", _fetch_etf_tx),
+        ("新浪", _fetch_etf_sina),
+        ("同花顺", _fetch_etf_ths),
+        ("stockdata-hub", _fetch_etf_hub),
+    ]
+
+    errors = []
     for name, func in sources:
         try:
             df = fetch_with_retry(func, etf_code, days, retries=1, delay=1)
             if df is not None and not df.empty and len(df) >= 30:
                 return df, name
-        except Exception:
+            errors.append(f"{name}: 空或数据不足")
+        except Exception as e:
+            errors.append(f"{name}: {e}")
             continue
-        time.sleep(1)
-    return pd.DataFrame(), "全部失败"
+        time.sleep(0.8)  # 源之间短暂间隔，降低连续高频被限风险
 
+    return pd.DataFrame(), "全部失败（" + "；".join(errors) + "）"
+
+
+# ============================================================
+# 其余数据层（指数、实时、行业映射、宽基选择、相关性）
+# ============================================================
 
 @st.cache_data(ttl=1800)
 def fetch_index_daily(symbol: str = "sh000300", days: int = 250) -> pd.DataFrame:
@@ -145,10 +258,6 @@ def fetch_etf_realtime(etf_code: str) -> dict:
     except Exception:
         return {}
 
-
-# ============================================================
-# 行业 ETF 映射 + 宽基选择 + 相关性验证
-# ============================================================
 
 INDUSTRY_KEYWORDS = {
     "证券": ("512000", "券商ETF"), "券商": ("512000", "券商ETF"),
@@ -261,7 +370,7 @@ def format_option_name(etf_prefix: str, opt_type: str, month: str, strike: float
 
 
 # ============================================================
-# 指标层
+# 指标层与趋势引擎
 # ============================================================
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -288,10 +397,6 @@ def calc_beta(stock_df: pd.DataFrame, index_df: pd.DataFrame,
     cov = np.cov(joined["s"], joined["i"])
     return float(cov[0, 1] / cov[1, 1]) if cov[1, 1] != 0 else 1.0
 
-
-# ============================================================
-# 趋势打分引擎
-# ============================================================
 
 def score_ma(df: pd.DataFrame) -> int:
     r = df.iloc[-1]
@@ -601,15 +706,13 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
 
 # ============================================================
-# 主界面（固定老年人大字样式，日历尺寸收敛）
+# 主界面
 # ============================================================
 
 st.set_page_config(page_title="对冲分析助手", layout="centered")
 
-# ---- 固定样式 ----
 st.markdown("""
 <style>
-/* 彻底隐藏所有版本的 Running 指示器 */
 [data-testid="stStatusWidget"],
 [data-testid="stAppRunningMan"],
 [data-testid="stConnectionStatus"],
@@ -632,11 +735,8 @@ st.markdown("""
     z-index: -99999 !important;
 }
 
-#MainMenu {
-    visibility: hidden !important;
-}
+#MainMenu { visibility: hidden !important; }
 
-/* 输入框标签：加粗 + 24px */
 [data-testid="stTextInput"] label,
 [data-testid="stNumberInput"] label,
 [data-testid="stDateInput"] label {
@@ -646,7 +746,6 @@ st.markdown("""
     margin-bottom: 4px !important;
 }
 
-/* 输入框内容：24px + 加大高度 */
 [data-testid="stTextInput"] input,
 [data-testid="stNumberInput"] input,
 [data-testid="stDateInput"] input {
@@ -656,10 +755,6 @@ st.markdown("""
     padding: 10px 14px !important;
 }
 
-/* ============================================================
-   日期选择器弹出日历：字号 18px，格子 40×40（整体收敛，不再过大）
-   兼容新的 stDateInputCalendar 和旧 baseweb 选择器
-   ============================================================ */
 [data-testid="stDateInputCalendar"],
 [data-testid="stDateInputCalendar"] *,
 [data-baseweb="calendar"],
@@ -685,12 +780,6 @@ st.markdown("""
     font-weight: 600 !important;
 }
 
-[data-testid="stDateInputCalendar"] [role="grid"],
-[data-testid="stDateInputCalendar"] [role="row"] {
-    font-size: 18px !important;
-}
-
-/* 开始分析按钮：金色大字 */
 .stButton > button {
     font-size: 30px !important;
     font-weight: bold !important;
@@ -708,13 +797,11 @@ st.markdown("""
     border-color: #FFE55C !important;
 }
 
-/* 正文放大 */
 [data-testid="stMarkdownContainer"] p,
 [data-testid="stMarkdownContainer"] li {
     font-size: 18px !important;
 }
 
-/* 指标卡数值放大 */
 [data-testid="stMetricValue"] {
     font-size: 30px !important;
     font-weight: 700 !important;
@@ -723,14 +810,12 @@ st.markdown("""
     font-size: 16px !important;
 }
 
-/* 表格数据放大 */
 [data-testid="stDataFrame"] * {
     font-size: 16px !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ---- 标题 + 红色提示合并为一行 ----
 st.markdown(
     """
     <div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
@@ -832,9 +917,11 @@ if st.button("开始分析"):
                     )
                 else:
                     st.warning(
-                        f"⚠️ 东财、腾讯、新浪三个接口均未能获取 {broad_etf['name']} 的历史日线，"
-                        f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选。"
+                        f"⚠️ 五个数据源（东财、腾讯、新浪、同花顺、stockdata-hub）"
+                        f"均未能获取 {broad_etf['name']} 的历史日线，无法计算实际相关性。"
+                        f"下方期权建议仅基于 Beta 和规则初选。"
                     )
+                    st.caption(f"各源失败原因：{etf_source}")
 
                 st.subheader("【工具匹配 · 具体执行指令】")
                 opts = hedge.get("options", [])
