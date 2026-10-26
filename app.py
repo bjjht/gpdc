@@ -43,7 +43,6 @@ def get_date_range(days: int) -> tuple:
 # ============================================================
 
 def fetch_with_retry(func, *args, retries=1, delay=1, **kwargs):
-    # 【提速修改】默认重试次数从 3 降为 1，避免卡死时等待太久
     for i in range(retries):
         try:
             return func(*args, **kwargs)
@@ -103,7 +102,6 @@ def _fetch_etf_ths(etf_code: str, days: int) -> pd.DataFrame:
     url = f"http://d.10jqka.com.cn/v6/line/hs_{etf_code}/01/last.js"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "http://q.10jqka.com.cn/"}
     try:
-        # 【提速修改】requests 超时从 10 秒改为 3 秒
         resp = requests.get(url, headers=headers, timeout=3)
         resp.raise_for_status()
         m = re.search(r"\((\{.*\})\)", resp.text, re.DOTALL)
@@ -144,7 +142,7 @@ ALL_SOURCES = [
 ]
 MIN_ROWS = 30
 
-@st.cache_data(ttl=3600, show_spinner=False) # 【提速修改】缓存延长到1小时
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
     all_results, valid_in_order = {}, []
     
@@ -157,8 +155,6 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
             
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(ALL_SOURCES)) as executor:
         futures = {executor.submit(_run_one, name, func): name for name, func in ALL_SOURCES}
-        
-        # 【提速修改】不再死等所有源！最多只等 2.5 秒，超时的直接抛弃
         done, not_done = concurrent.futures.wait(futures, timeout=2.5)
         
         seq = 0
@@ -178,7 +174,6 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
             all_results[name] = {"rows": len(df), "status": "✅ 成功", "order": seq}
             valid_in_order.append((seq, name, df))
             
-        # 标记超时的源
         for future in not_done:
             all_results[futures[future]] = {"rows": 0, "status": "⌛ 超时(>2.5s)", "order": 99}
 
@@ -213,13 +208,25 @@ def fetch_etf_realtime(etf_code: str) -> dict:
         return {"price": float(row.iloc[0]["最新价"]), "name": row.iloc[0]["名称"]}
     except Exception: return {}
 
+# ============================================================
+# 扩充后的行业映射与宽基池
+# ============================================================
+
 INDUSTRY_KEYWORDS = {
-    "证券": ("512000", "券商ETF"), "券商": ("512000", "券商ETF"), "银行": ("512800", "银行ETF"),
-    "半导体": ("512480", "半导体ETF"), "芯片": ("512480", "半导体ETF"), "计算机": ("512720", "计算机ETF"),
-    "软件": ("515230", "软件ETF"), "通信": ("515880", "通信ETF"), "医药": ("512010", "医药ETF"),
-    "医疗": ("512170", "医疗ETF"), "消费": ("159928", "消费ETF"), "白酒": ("512690", "酒ETF"),
-    "新能源": ("516160", "新能源ETF"), "光伏": ("515790", "光伏ETF"), "军工": ("512660", "军工ETF"),
-    "房地产": ("512200", "房地产ETF"), "煤炭": ("515220", "煤炭ETF"), "有色": ("512400", "有色金属ETF"),
+    # 金融
+    "证券": ("512000", "券商ETF"), "券商": ("512000", "券商ETF"), "银行": ("512800", "银行ETF"), "保险": ("512070", "保险ETF"),
+    # TMT科技
+    "半导体": ("512480", "半导体ETF"), "芯片": ("512480", "半导体ETF"), "计算机": ("512720", "计算机ETF"), "软件": ("515230", "软件ETF"),
+    "通信": ("515880", "通信ETF"), "人工智能": ("515070", "人工智能ETF"), "游戏": ("159869", "游戏ETF"), "传媒": ("512980", "传媒ETF"),
+    # 医药消费
+    "医药": ("512010", "医药ETF"), "医疗": ("512170", "医疗ETF"), "生物": ("512290", "生物医药ETF"), "消费": ("159928", "消费ETF"),
+    "白酒": ("512690", "酒ETF"), "食品": ("515710", "食品饮料ETF"), "饮料": ("515710", "食品饮料ETF"), "家电": ("159996", "家电ETF"),
+    "旅游": ("159766", "旅游ETF"), "养殖": ("159865", "养殖ETF"), "农业": ("159825", "农业ETF"),
+    # 制造与周期
+    "新能源": ("516160", "新能源ETF"), "光伏": ("515790", "光伏ETF"), "锂电": ("159755", "电池ETF"), "电池": ("159755", "电池ETF"),
+    "汽车": ("516110", "汽车ETF"), "军工": ("512660", "军工ETF"), "地产": ("512200", "房地产ETF"), "房地产": ("512200", "房地产ETF"),
+    "煤炭": ("515220", "煤炭ETF"), "有色": ("512400", "有色金属ETF"), "钢铁": ("515210", "钢铁ETF"), "化工": ("516020", "化工ETF"),
+    "黄金": ("518880", "黄金ETF"), "环保": ("512580", "环保ETF"), "电力": ("159611", "电力ETF"),
 }
 
 def detect_industry_etf(stock_name: str):
@@ -231,7 +238,10 @@ BROAD_ETF_POOL = [
     {"code": "510050", "name": "上证50ETF", "index_name": "上证50"},
     {"code": "510300", "name": "300ETF", "index_name": "沪深300"},
     {"code": "510500", "name": "500ETF", "index_name": "中证500"},
+    {"code": "512100", "name": "1000ETF", "index_name": "中证1000"},
+    {"code": "563360", "name": "A500ETF", "index_name": "中证A500"},
     {"code": "159915", "name": "创业板ETF", "index_name": "创业板指"},
+    {"code": "159949", "name": "创业板50ETF", "index_name": "创业板50"},
     {"code": "588000", "name": "科创50ETF", "index_name": "科创50"},
 ]
 
@@ -249,18 +259,18 @@ def calc_correlation_r2(stock_df: pd.DataFrame, etf_df: pd.DataFrame, window: in
     return {"r": round(r, 4), "r2": round(r ** 2, 4), "n": len(ret_s), "window": actual_window, "reason": ""}
 
 def select_best_broad_etf(stock_code: str, stock_df: pd.DataFrame, beta: float):
-    candidates = []
-    if stock_code.startswith(("688", "689")): candidates = [BROAD_ETF_POOL[4], BROAD_ETF_POOL[1]]
-    elif stock_code.startswith("30"): candidates = [BROAD_ETF_POOL[3], BROAD_ETF_POOL[1], BROAD_ETF_POOL[2]]
+    # 根据板块挑选更丰富的候选池
+    if stock_code.startswith(("688", "689")): 
+        candidates = [BROAD_ETF_POOL[7], BROAD_ETF_POOL[1], BROAD_ETF_POOL[4]] # 科创50, 300, A500
+    elif stock_code.startswith("30"): 
+        candidates = [BROAD_ETF_POOL[5], BROAD_ETF_POOL[6], BROAD_ETF_POOL[1], BROAD_ETF_POOL[2]] # 创业, 创业50, 300, 500
     else:
-        if beta >= 1.3: candidates = [BROAD_ETF_POOL[2], BROAD_ETF_POOL[1]]
-        elif beta <= 0.8: candidates = [BROAD_ETF_POOL[0], BROAD_ETF_POOL[1]]
-        else: candidates = [BROAD_ETF_POOL[1], BROAD_ETF_POOL[2], BROAD_ETF_POOL[0]]
+        if beta >= 1.3: candidates = [BROAD_ETF_POOL[3], BROAD_ETF_POOL[2], BROAD_ETF_POOL[4], BROAD_ETF_POOL[1]] # 1000, 500, A500, 300
+        elif beta <= 0.8: candidates = [BROAD_ETF_POOL[0], BROAD_ETF_POOL[1], BROAD_ETF_POOL[4]] # 50, 300, A500
+        else: candidates = [BROAD_ETF_POOL[1], BROAD_ETF_POOL[4], BROAD_ETF_POOL[2], BROAD_ETF_POOL[0]] # 300, A500, 500, 50
 
     best_etf, best_corr, best_hist, best_source, compare_results = candidates[0], {"r": None, "r2": None}, pd.DataFrame(), "", []
     
-    # 【提速修改】虽然这里还是 for 循环，但内部的 fetch_etf_daily_multi 最多只等 2.5 秒。
-    # 即便最坏情况全超时，3个候选宽基也就最多耗时 7.5 秒。
     for etf in candidates:
         multi = fetch_etf_daily_multi(etf["code"], days=90)
         hist, source = multi["best_df"], multi["best_source"]
