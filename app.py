@@ -192,7 +192,6 @@ def _fetch_etf_hub(etf_code: str, days: int) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-# 东财由于容易被限流，排在最后（并发请求，不影响速度）
 ALL_SOURCES = [
     ("腾讯", _fetch_etf_tx),
     ("同花顺", _fetch_etf_ths),
@@ -202,13 +201,7 @@ ALL_SOURCES = [
     ("东财", _fetch_etf_em),
 ]
 
-# 恢复正常阈值（因为证明数据源没问题了）
 MIN_ROWS = 30
-
-
-# ============================================================
-# 多源并发取数：按“最快返回有效数据”选最优源
-# ============================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
@@ -234,25 +227,15 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
                 df, err = None, str(e)
 
             if err:
-                all_results[name] = {
-                    "rows": 0, "start": "-", "end": "-",
-                    "status": f"❌ {err[:50]}", "order": seq,
-                }
+                all_results[name] = {"rows": 0, "start": "-", "end": "-", "status": f"❌ {err[:50]}", "order": seq}
                 continue
-
             if df is None or df.empty:
-                all_results[name] = {
-                    "rows": 0, "start": "-", "end": "-",
-                    "status": "⚠️ 返回空", "order": seq,
-                }
+                all_results[name] = {"rows": 0, "start": "-", "end": "-", "status": "⚠️ 返回空", "order": seq}
                 continue
 
             rows = len(df)
             if rows < MIN_ROWS:
-                all_results[name] = {
-                    "rows": rows, "start": "-", "end": "-",
-                    "status": f"⚠️ 仅 {rows} 行", "order": seq,
-                }
+                all_results[name] = {"rows": rows, "start": "-", "end": "-", "status": f"⚠️ 仅 {rows} 行", "order": seq}
                 continue
 
             df = df.sort_values("date").reset_index(drop=True)
@@ -268,28 +251,14 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
             valid_in_order.append((seq, name, df, rows, end_d))
 
     if not valid_in_order:
-        return {
-            "best_source": "无可用源",
-            "best_df": pd.DataFrame(),
-            "all_results": all_results,
-            "summary": f"⚠️ 全部 {len(ALL_SOURCES)} 个数据源均未返回有效数据。",
-        }
+        return {"best_source": "无可用源", "best_df": pd.DataFrame(), "all_results": all_results, "summary": "⚠️ 全部数据源均未返回有效数据。"}
 
     valid_in_order.sort(key=lambda x: x[0])
     best_seq, best_name, best_df, best_rows, best_end = valid_in_order[0]
 
-    summary = (
-        f"探测标的：**{etf_code}**；共 **{len(valid_in_order)}/{len(ALL_SOURCES)}** 个源返回有效数据；"
-        f"最快有效源：**{best_name}**"
-        f"（第 {best_seq} 个完成，{best_rows}行，截至 {best_end.strftime('%Y-%m-%d')}）"
-    )
+    summary = f"探测标的：**{etf_code}**；共 **{len(valid_in_order)}/{len(ALL_SOURCES)}** 个源返回有效数据；最快有效源：**{best_name}**（第 {best_seq} 个完成，{best_rows}行，截至 {best_end.strftime('%Y-%m-%d')}）"
 
-    return {
-        "best_source": best_name,
-        "best_df": best_df,
-        "all_results": all_results,
-        "summary": summary,
-    }
+    return {"best_source": best_name, "best_df": best_df, "all_results": all_results, "summary": summary}
 
 
 # ============================================================
@@ -315,8 +284,7 @@ def fetch_realtime(code: str) -> dict:
         if raw.empty:
             return {}
         r = raw.iloc[0]
-        return {"price": float(r["最新价"]), "name": r["名称"],
-                "pct": float(r["涨跌幅"]) if "涨跌幅" in r else 0.0}
+        return {"price": float(r["最新价"]), "name": r["名称"], "pct": float(r["涨跌幅"]) if "涨跌幅" in r else 0.0}
     except Exception:
         return {}
 
@@ -366,67 +334,95 @@ def detect_industry_etf(stock_name: str):
     return None
 
 
-def select_broad_etf(code: str, beta: float) -> dict:
-    if code.startswith(("688", "689")):
-        return {"code": "588000", "name": "科创50ETF", "index_name": "科创50",
-                "match_note": "科创板（688/689）→ 科创50ETF"}
-    if code.startswith("30"):
-        return {"code": "159915", "name": "创业板ETF", "index_name": "创业板指",
-                "match_note": "创业板（30开头）→ 创业板ETF"}
-    if code.startswith(("8", "4")):
-        return {"code": "510300", "name": "300ETF", "index_name": "沪深300",
-                "match_note": "北交所（8/4开头）无对应宽基期权，降级用沪深300"}
-    if beta >= 1.3:
-        return {"code": "510500", "name": "500ETF", "index_name": "中证500",
-                "match_note": f"主板 + 高Beta（{beta:.2f}≥1.3）→ 中证500ETF"}
-    if beta <= 0.8:
-        return {"code": "510050", "name": "50ETF", "index_name": "上证50",
-                "match_note": f"主板 + 低Beta（{beta:.2f}≤0.8）→ 上证50ETF"}
-    return {"code": "510300", "name": "300ETF", "index_name": "沪深300",
-            "match_note": f"主板 + 中等Beta（0.8<{beta:.2f}<1.3）→ 沪深300ETF"}
+# ------------------------------------------------------------
+# 数据驱动：宽基 ETF 智能优选
+# ------------------------------------------------------------
+BROAD_ETF_POOL = [
+    {"code": "510050", "name": "上证50ETF", "index_name": "上证50"},
+    {"code": "510300", "name": "300ETF", "index_name": "沪深300"},
+    {"code": "510500", "name": "500ETF", "index_name": "中证500"},
+    {"code": "159915", "name": "创业板ETF", "index_name": "创业板指"},
+    {"code": "588000", "name": "科创50ETF", "index_name": "科创50"},
+]
 
 
 def calc_correlation_r2(stock_df: pd.DataFrame, etf_df: pd.DataFrame, window: int = 60) -> dict:
-    """
-    ✅ 核心修复：动态调整计算窗口。
-    如果个股或ETF上市时间短，自动降级用最大可用天数（最少5天）。
-    """
     if etf_df is None or etf_df.empty:
         return {"r": None, "r2": None, "n": 0, "reason": "ETF数据为空"}
-
-    # 找出两者能对齐的最大天数
     actual_window = min(window, len(stock_df) - 1, len(etf_df) - 1)
-    
     if actual_window < 5:
         return {"r": None, "r2": None, "n": 0, "reason": f"上市时间太短（仅{actual_window}天）"}
-
     s = stock_df[["date", "close"]].rename(columns={"close": "stock"})
     e = etf_df[["date", "close"]].rename(columns={"close": "etf"})
     merged = pd.merge(s, e, on="date", how="inner").dropna()
-
     if len(merged) < actual_window:
          return {"r": None, "r2": None, "n": len(merged), "reason": "对齐后的共同交易日不足"}
-
     merged = merged.tail(actual_window)
     ret_s = merged["stock"].pct_change().dropna()
     ret_e = merged["etf"].pct_change().dropna()
-
     if len(ret_s) < 5:
         return {"r": None, "r2": None, "n": len(ret_s), "reason": "收益率数据不足"}
-
     r = float(ret_s.corr(ret_e))
     return {"r": round(r, 4), "r2": round(r ** 2, 4), "n": len(ret_s), "window": actual_window, "reason": ""}
 
 
+def select_best_broad_etf(stock_code: str, stock_df: pd.DataFrame, beta: float):
+    """
+    取消硬编码，数据驱动。
+    遍历基础宽基池，测试相关性，返回最优 ETF，以及所有对比数据。
+    """
+    # 根据板块先初步筛选候选池，减少请求量
+    candidates = []
+    if stock_code.startswith(("688", "689")):
+        candidates = [BROAD_ETF_POOL[4], BROAD_ETF_POOL[1]]  # 科创50, 300
+    elif stock_code.startswith("30"):
+        candidates = [BROAD_ETF_POOL[3], BROAD_ETF_POOL[1], BROAD_ETF_POOL[2]]  # 创业, 300, 500
+    else:
+        # 主板，根据 Beta 挑
+        if beta >= 1.3: candidates = [BROAD_ETF_POOL[2], BROAD_ETF_POOL[1]]  # 500, 300
+        elif beta <= 0.8: candidates = [BROAD_ETF_POOL[0], BROAD_ETF_POOL[1]]  # 50, 300
+        else: candidates = [BROAD_ETF_POOL[1], BROAD_ETF_POOL[2], BROAD_ETF_POOL[0]]  # 300, 500, 50
+
+    best_etf = candidates[0]
+    best_corr = {"r": None, "r2": None, "n": 0}
+    best_hist = pd.DataFrame()
+    best_source = ""
+    
+    compare_results = []
+
+    for etf in candidates:
+        # 获取该候选 ETF 的历史数据
+        multi = fetch_etf_daily_multi(etf["code"], days=90)
+        hist = multi["best_df"]
+        source = multi["best_source"]
+        
+        # 计算相关性
+        corr = calc_correlation_r2(stock_df, hist, window=60)
+        
+        compare_results.append({
+            "ETF代码": etf["code"],
+            "ETF名称": etf["name"],
+            "跟踪指数": etf["index_name"],
+            "R²": corr["r2"] if corr["r2"] is not None else 0,
+            "状态": source
+        })
+
+        # 更新最优（选 R² 最大的）
+        if corr["r2"] is not None:
+            if best_corr["r2"] is None or corr["r2"] > best_corr["r2"]:
+                best_corr = corr
+                best_etf = etf
+                best_hist = hist
+                best_source = source
+
+    return best_etf, best_corr, best_hist, best_source, compare_results
+
+
 def r2_grade(r2) -> dict:
-    if r2 is None:
-        return {"label": "无法计算", "color": "gray", "meaning": "数据不足"}
-    if r2 >= 0.49:
-        return {"label": "强匹配", "color": "green", "meaning": "该宽基能解释个股大部分波动，期权对冲效果相对可靠"}
-    if r2 >= 0.25:
-        return {"label": "中等匹配", "color": "orange", "meaning": "该宽基能解释部分波动，对冲有效但不完全"}
-    if r2 >= 0.09:
-        return {"label": "弱匹配", "color": "red", "meaning": "联动性较弱，期权对冲效果有限"}
+    if r2 is None: return {"label": "无法计算", "color": "gray", "meaning": "数据不足"}
+    if r2 >= 0.49: return {"label": "强匹配", "color": "green", "meaning": "该宽基能解释个股大部分波动，期权对冲效果相对可靠"}
+    if r2 >= 0.25: return {"label": "中等匹配", "color": "orange", "meaning": "该宽基能解释部分波动，对冲有效但不完全"}
+    if r2 >= 0.09: return {"label": "弱匹配", "color": "red", "meaning": "联动性较弱，期权对冲效果有限"}
     return {"label": "极弱/无匹配", "color": "red", "meaning": "该宽基与个股联动性很差，不建议用期权对冲"}
 
 
@@ -439,16 +435,13 @@ def get_strike_interval(etf_price: float) -> float:
     if etf_price <= 100: return 2.5
     return 5.0
 
-
 def round_to_strike(target: float, interval: float) -> float:
     return round(target / interval) * interval
-
 
 def option_month_label() -> str:
     today = datetime.today()
     next_month = today.month + 1 if today.month < 12 else 1
     return f"{next_month}月"
-
 
 def format_option_name(etf_prefix: str, opt_type: str, month: str, strike: float) -> str:
     strike_int = int(round(strike * 1000))
@@ -472,16 +465,13 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     return df
 
-
 def calc_beta(stock_df: pd.DataFrame, index_df: pd.DataFrame, window: int = 90) -> float:
     s = stock_df.set_index("date")["close"].pct_change()
     i = index_df.set_index("date")["close"].pct_change()
     joined = pd.concat([s, i], axis=1, keys=["s", "i"]).dropna().tail(window)
-    if len(joined) < 30:
-        return 1.0
+    if len(joined) < 30: return 1.0
     cov = np.cov(joined["s"], joined["i"])
     return float(cov[0, 1] / cov[1, 1]) if cov[1, 1] != 0 else 1.0
-
 
 def score_ma(df: pd.DataFrame) -> int:
     r = df.iloc[-1]
@@ -494,7 +484,6 @@ def score_ma(df: pd.DataFrame) -> int:
     if c < m60: return -2
     return 0
 
-
 def score_macd(df: pd.DataFrame) -> int:
     r, p = df.iloc[-1], df.iloc[-2]
     dif, dea, hist = r["dif"], r["dea"], r["macd_hist"]
@@ -506,7 +495,6 @@ def score_macd(df: pd.DataFrame) -> int:
     if dif < 0 and dif < dea and p["dif"] > p["dea"]: return -2
     return 0
 
-
 def score_relative(stock_df, index_df) -> int:
     if len(stock_df) < 21 or len(index_df) < 21: return 0
     s20 = stock_df["close"].iloc[-1] / stock_df["close"].iloc[-21] - 1
@@ -517,7 +505,6 @@ def score_relative(stock_df, index_df) -> int:
     if diff > -5: return -1
     return -2
 
-
 def score_volume(df: pd.DataFrame) -> int:
     r = df.iloc[-1]
     if pd.isna(r["vol_ma5"]) or r["vol_ma5"] == 0: return 0
@@ -525,7 +512,6 @@ def score_volume(df: pd.DataFrame) -> int:
     if ratio > 1.2 and r["pct_chg"] > 0: return 1
     if ratio < 0.8 and r["pct_chg"] < 0: return -1
     return 0
-
 
 def score_valuation(pe_pct) -> int:
     if pe_pct is None: return 0
@@ -535,18 +521,10 @@ def score_valuation(pe_pct) -> int:
     if pe_pct < 0.80: return -1
     return -2
 
-
 WEIGHTS = {"ma": 0.25, "macd": 0.20, "relative": 0.20, "volume": 0.15, "valuation": 0.20}
 
-
 def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
-    scores = {
-        "ma": score_ma(stock_df),
-        "macd": score_macd(stock_df),
-        "relative": score_relative(stock_df, index_df),
-        "volume": score_volume(stock_df),
-        "valuation": score_valuation(pe_pct),
-    }
+    scores = {"ma": score_ma(stock_df), "macd": score_macd(stock_df), "relative": score_relative(stock_df, index_df), "volume": score_volume(stock_df), "valuation": score_valuation(pe_pct)}
     total = sum(scores[k] * WEIGHTS[k] for k in scores)
     if total >= 1.2: rating = "偏多"
     elif total >= 0.3: rating = "中性偏多"
@@ -557,9 +535,7 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
     support = min(recent["low"].min(), stock_df["ma60"].iloc[-1])
     resistance = max(recent["high"].max(), stock_df["ma20"].iloc[-1])
     pivot = stock_df["ma20"].iloc[-1]
-    return {"scores": scores, "total": round(total, 2), "rating": rating,
-            "support": round(support, 2), "resistance": round(resistance, 2),
-            "pivot": round(pivot, 2)}
+    return {"scores": scores, "total": round(total, 2), "rating": rating, "support": round(support, 2), "resistance": round(resistance, 2), "pivot": round(pivot, 2)}
 
 
 # ============================================================
@@ -571,8 +547,7 @@ def match_hedge(rating: str, market_value: float, qty: int, beta: float,
                 broad_etf: dict = None, etf_price: float = None, corr: dict = None) -> dict:
 
     options = []
-    if broad_etf is None:
-        broad_etf = {"code": "510300", "name": "300ETF", "index_name": "沪深300", "match_note": ""}
+    if broad_etf is None: broad_etf = {"code": "510300", "name": "300ETF", "index_name": "沪深300"}
     corr = corr or {"r": None, "r2": None, "n": 0}
     grade = r2_grade(corr["r2"])
     etf_price_used = etf_price if etf_price else 4.0
@@ -590,7 +565,7 @@ def match_hedge(rating: str, market_value: float, qty: int, beta: float,
     call_name = format_option_name(broad_etf["name"], "购", month, call_strike)
 
     match_line = (
-        f"输入股票 **{stock_name}（{stock_code}）** 对应宽基："
+        f"输入股票 **{stock_name}（{stock_code}）** 自动匹配的最优宽基："
         f"**{broad_etf['name']}（{broad_etf['code']}）**，跟踪 {broad_etf['index_name']}。"
         f"实际相关性：**r = {corr['r']}，R² = {corr['r2']}**"
         f"（{corr['n']} 个交易日），匹配度等级：**{grade['label']}**。"
@@ -598,9 +573,7 @@ def match_hedge(rating: str, market_value: float, qty: int, beta: float,
 
     if market_value < 2000:
         return {"options": [{
-            "tool": "直接减仓/清仓",
-            "detail": f"市值 {market_value:.0f} 元低于任何衍生品的有效规模门槛。**直接卖出 {qty} 股 {stock_name}（{stock_code}）**，市价委托即可，无利息、无权利金、无保证金。",
-            "cost_note": "仅正常交易佣金，无额外成本",
+            "tool": "直接减仓/清仓", "detail": f"市值 {market_value:.0f} 元低于衍生品有效门槛，直接卖出 {qty} 股 {stock_name}（{stock_code}），无额外成本", "cost_note": "仅正常交易佣金",
             "action": "SELL", "target": f"{stock_name}（{stock_code}）", "side": "卖出", "qty": qty, "price_hint": "市价委托",
         }]}
 
@@ -613,13 +586,13 @@ def match_hedge(rating: str, market_value: float, qty: int, beta: float,
 
         options.append({
             "tool": "减仓（首选）",
-            "detail": f"**卖出 {reduce_qty} 股 {stock_name}（{stock_code}）**，市价委托即可，减仓约 {reduce_ratio*100:.0f}%，无利息成本，剩余持仓 {qty - reduce_qty} 股",
+            "detail": f"**卖出 {reduce_qty} 股 {stock_name}（{stock_code}）**，减仓约 {reduce_ratio*100:.0f}%，无利息成本，剩余持仓 {qty - reduce_qty} 股",
             "cost_note": "仅正常交易佣金",
             "action": "SELL", "target": f"{stock_name}（{stock_code}）", "side": "卖出", "qty": reduce_qty, "price_hint": "市价委托",
         })
         options.append({
             "tool": "融券部分对冲（保留底仓的备选）",
-            "detail": f"**融券卖出 {short_qty} 股 {stock_name}（{stock_code}）**，保留 {qty - short_qty} 股多头。对冲比例约 {short_qty/qty*100:.0f}%，**下单前务必在券商APP确认该股实时可融余量**",
+            "detail": f"**融券卖出 {short_qty} 股 {stock_name}（{stock_code}）**，保留 {qty - short_qty} 股多头。**下单前务必确认实时可融余量**",
             "cost_note": "融券年化利息约 8%，按日计提",
             "action": "SHORT_SELL", "target": f"{stock_name}（{stock_code}）", "side": "融券卖出", "qty": short_qty, "price_hint": "不低于最新成交价",
         })
@@ -638,8 +611,8 @@ def match_hedge(rating: str, market_value: float, qty: int, beta: float,
                 short_shares = max(100, int(raw_shares // 100) * 100)
                 options.append({
                     "tool": "融券做空行业 ETF",
-                    "detail": f"**融券卖出 {etf_name}（{etf_code}）{short_shares} 份**，对冲 {stock_name} 的板块系统性风险。行业ETF券源通常比宽基更稀缺，**下单前务必在“融券标的”中确认实时可融余量**",
-                    "cost_note": "融券年化利息约 8%，券源稀缺时可能更高，以券商APP为准",
+                    "detail": f"**融券卖出 {etf_name}（{etf_code}）{short_shares} 份**，对冲 {stock_name} 的板块系统性风险。行业ETF券源稀缺，**务必确认实时余量**",
+                    "cost_note": "融券年化利息约 8%，以券商APP为准",
                     "action": "SHORT_SELL", "target": f"{etf_name}（{etf_code}）", "side": "融券卖出", "qty": short_shares, "price_hint": "不低于最新成交价",
                     "etf_detail": {"name": etf_name, "code": etf_code, "price": etf_px, "short_shares": short_shares, "industry_beta": industry_beta},
                 })
@@ -654,40 +627,34 @@ def match_hedge(rating: str, market_value: float, qty: int, beta: float,
             else:
                 options.append({
                     "tool": f"领口策略（{broad_etf['name']}）",
-                    "detail": f"{match_line} **买入 {put_name} {equiv_int} 张**（防跌） + **卖出 {call_name} {equiv_int} 张**（收权利金抵消成本）。{broad_etf['name']} 实时参考价 **{etf_price_used:.3f} 元**{price_note}。**权利金精确报价以券商APP期权T型报价为准**",
+                    "detail": f"{match_line} **买入 {put_name} {equiv_int} 张** + **卖出 {call_name} {equiv_int} 张**。实时参考价 **{etf_price_used:.3f} 元**{price_note}。**权利金以券商APP为准**",
                     "cost_note": "净权利金成本较低，上方收益受限",
                     "action": "OPTION_COLLAR", "target": f"{put_name} + {call_name}", "side": "买入认沽 + 卖出认购", "qty": equiv_int, "price_hint": "以券商APP权利金为准",
                 })
 
-        if not options:
-            options.append({"tool": "持有观望", "detail": "设置止损提醒，不建对冲仓", "cost_note": "无"})
+        if not options: options.append({"tool": "持有观望", "detail": "设置止损提醒，不建对冲仓", "cost_note": "无"})
         return {"options": options}
 
     if rating == "中性偏多":
         options = []
         if equiv_int >= 1:
             if corr["r2"] is not None and corr["r2"] < 0.09:
-                options.append({
-                    "tool": f"⚠️ {broad_etf['name']} 期权（不推荐）",
-                    "detail": f"{match_line} R² 太低，期权对冲效果不可靠，**不建议执行**。",
-                    "cost_note": "权利金可能沉没",
-                })
+                options.append({"tool": f"⚠️ {broad_etf['name']} 期权（不推荐）", "detail": f"{match_line} R² 太低，**不建议执行**。", "cost_note": "权利金可能沉没"})
             else:
                 options.append({
                     "tool": f"备兑开仓（卖出 {broad_etf['name']} 认购）",
-                    "detail": f"{match_line} **卖出 {call_name} {equiv_int} 张**，收取权利金增厚收益。需持有对应 **{broad_etf['name']}（{broad_etf['code']}）现货** 作为担保。",
-                    "cost_note": "收取权利金，需有对应 ETF 现货；权利金以券商APP为准",
+                    "detail": f"{match_line} **卖出 {call_name} {equiv_int} 张**，收取权利金。需持有对应 **{broad_etf['name']}（{broad_etf['code']}）现货** 作为担保。",
+                    "cost_note": "收取权利金，需有对应 ETF 现货",
                     "action": "OPTION_COVERED_CALL", "target": call_name, "side": "卖出认购", "qty": equiv_int, "price_hint": "以券商APP权利金为准",
                 })
                 options.append({
                     "tool": f"保护性认沽（买入 {broad_etf['name']} 认沽）",
-                    "detail": f"{match_line} **买入 {put_name} {equiv_int} 张**，支付权利金锁定下行底线，保留上方收益。最大损失为已支付的权利金",
-                    "cost_note": "权利金为最大损失；精确报价以券商APP为准",
+                    "detail": f"{match_line} **买入 {put_name} {equiv_int} 张**，锁定下行底线，保留上方收益。",
+                    "cost_note": "权利金为最大损失",
                     "action": "OPTION_PROTECTIVE_PUT", "target": put_name, "side": "买入认沽", "qty": equiv_int, "price_hint": "以券商APP权利金为准",
                 })
 
-        if not options:
-            options.append({"tool": "无需对冲", "detail": "设置移动止盈/止损提醒即可", "cost_note": "无"})
+        if not options: options.append({"tool": "无需对冲", "detail": "设置移动止盈/止损提醒即可", "cost_note": "无"})
         return {"options": options}
 
     return {"options": [{"tool": "无需对冲", "detail": "趋势偏多，设置移动止盈提醒即可", "cost_note": "无"}]}
@@ -753,7 +720,7 @@ buy_price = col1.number_input("买入价", value=None, step=0.01, format="%.2f",
 qty = col2.number_input("数量（股）", value=None, step=100, placeholder="如 100")
 buy_date = col2.date_input("买入日期", value=None)
 
-if st.button("🔄 强制刷新数据源", help="清空缓存并重新向所有数据源发起请求"):
+if st.button("🔄 强制刷新数据源"):
     st.cache_data.clear()
     st.rerun()
 
@@ -761,7 +728,7 @@ if st.button("开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        with st.spinner("正在并发向全部数据源取数并汇总..."):
+        with st.spinner("正在并发向全部数据源取数并测算最优宽基..."):
             try:
                 code = code.strip()
                 qty = int(qty)
@@ -774,15 +741,8 @@ if st.button("开始分析"):
                 name = rt.get("name", code)
                 beta = calc_beta(stock_df, index_df)
 
-                broad_etf = select_broad_etf(code, beta)
-
-                multi = fetch_etf_daily_multi(broad_etf["code"], days=90)
-                etf_hist = multi["best_df"]
-                etf_source = multi["best_source"]
-                all_results = multi["all_results"]
-                summary = multi["summary"]
-
-                corr = calc_correlation_r2(stock_df, etf_hist, window=60)
+                # ---- 核心升级：智能优选宽基 ETF ----
+                broad_etf, corr, etf_hist, etf_source, compare_results = select_best_broad_etf(code, stock_df, beta)
                 grade = r2_grade(corr["r2"])
 
                 etf_rt = fetch_etf_realtime(broad_etf["code"])
@@ -798,32 +758,20 @@ if st.button("开始分析"):
                     broad_etf=broad_etf, etf_price=etf_price, corr=corr,
                 )
 
-                st.subheader("【输入股票 → 宽基 ETF 映射】")
-                st.markdown(
-                    f"- **输入股票**：{name}（{code}）\n"
-                    f"- **判定依据**：{broad_etf['match_note']}\n"
-                    f"- **对应宽基 ETF**：**{broad_etf['name']}（{broad_etf['code']}）**\n"
-                    f"- **跟踪指数**：{broad_etf['index_name']}\n"
-                    f"- **用于取数的探测标的**：{broad_etf['code']}"
+                st.subheader("【智能宽基优选（数据驱动）】")
+                st.write(f"系统测试了以下候选宽基与 **{name}** 的实际相关性，自动选择 **R²（拟合优度）最高** 的一个作为对冲标的：")
+                
+                # 展示对比表格
+                df_compare = pd.DataFrame(compare_results)
+                st.dataframe(df_compare, use_container_width=True, hide_index=True)
+
+                st.success(
+                    f"🎯 **最终选定**：**{broad_etf['name']}（{broad_etf['code']}）**，"
+                    f"跟踪 {broad_etf['index_name']}。"
                 )
 
                 st.subheader("【数据源汇总】")
-                st.markdown(summary)
-
-                with st.expander("📋 每个数据源的详细结果（按完成顺序）", expanded=True):
-                    rows_src = []
-                    for src_name, info in all_results.items():
-                        rows_src.append({
-                            "完成序号": info.get("order", "-"),
-                            "数据源": src_name,
-                            "状态": info["status"],
-                            "行数": info["rows"],
-                            "起始日": info["start"],
-                            "结束日": info["end"],
-                        })
-                    df_src = pd.DataFrame(rows_src).sort_values("完成序号")
-                    st.dataframe(df_src, use_container_width=True, hide_index=True)
-                    st.caption("最优源规则：**并发请求所有源，按完成顺序排序，第一个返回有效数据的源即为最优源。**")
+                st.markdown(f"最优源：**{etf_source}**（该源在拉取 {broad_etf['code']} 时最快返回有效数据）")
 
                 st.subheader("【持仓概览】")
                 st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | {qty}股 | 市值 {market_value:.0f}元 | 浮盈亏 {pnl:+.0f}元")
@@ -839,12 +787,6 @@ if st.button("开始分析"):
                 st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | 多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
 
                 st.subheader("【宽基匹配度验证】")
-                st.write(
-                    f"输入股票 **{name}（{code}）** 对应宽基："
-                    f"**{broad_etf['name']}（{broad_etf['code']}）**，"
-                    f"跟踪 {broad_etf['index_name']}。{broad_etf['match_note']}。"
-                )
-
                 if corr["r"] is not None:
                     col_a, col_b, col_c = st.columns(3)
                     col_a.metric("相关系数 r", f"{corr['r']:.3f}")
@@ -855,15 +797,9 @@ if st.button("开始分析"):
                     elif grade["color"] == "orange": st.warning(f"⚠️ {grade['meaning']}")
                     else: st.error(f"❌ {grade['meaning']}")
 
-                    st.caption(
-                        f"使用最快有效源：**{etf_source}**。"
-                        f"基于最近 {corr.get('window', corr['n'])} 个交易日的日收益率对齐计算。"
-                    )
+                    st.caption(f"基于最近 {corr.get('window', corr['n'])} 个交易日的日收益率对齐计算。")
                 else:
-                    st.warning(
-                        f"⚠️ 无法计算相关性：{corr.get('reason', '数据不足')}。"
-                        f"下方期权建议仅基于 Beta 和规则初选。"
-                    )
+                    st.warning(f"⚠️ 无法计算相关性：{corr.get('reason', '数据不足')}。下方期权建议仅基于 Beta 和规则初选。")
 
                 st.subheader("【工具匹配 · 具体执行指令】")
                 opts = hedge.get("options", [])
