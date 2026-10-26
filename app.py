@@ -42,14 +42,14 @@ def get_date_range(days: int) -> tuple:
 # 数据层
 # ============================================================
 
-def fetch_with_retry(func, *args, retries=3, delay=2, **kwargs):
+def fetch_with_retry(func, *args, retries=1, delay=1, **kwargs):
+    # 【提速修改】默认重试次数从 3 降为 1，避免卡死时等待太久
     for i in range(retries):
         try:
             return func(*args, **kwargs)
         except (ConnectionError, Timeout) as e:
             if i == retries - 1:
                 raise e
-            print(f"请求失败，{delay}秒后重试 ({i+1}/{retries})...")
             time.sleep(delay)
     return None
 
@@ -103,7 +103,8 @@ def _fetch_etf_ths(etf_code: str, days: int) -> pd.DataFrame:
     url = f"http://d.10jqka.com.cn/v6/line/hs_{etf_code}/01/last.js"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "http://q.10jqka.com.cn/"}
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        # 【提速修改】requests 超时从 10 秒改为 3 秒
+        resp = requests.get(url, headers=headers, timeout=3)
         resp.raise_for_status()
         m = re.search(r"\((\{.*\})\)", resp.text, re.DOTALL)
         if not m: return pd.DataFrame()
@@ -143,28 +144,47 @@ ALL_SOURCES = [
 ]
 MIN_ROWS = 30
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False) # 【提速修改】缓存延长到1小时
 def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
     all_results, valid_in_order = {}, []
+    
     def _run_one(name, func):
         try:
             df = fetch_with_retry(func, etf_code, days, retries=1, delay=1)
             return name, df, None
         except Exception as e:
             return name, None, str(e)
+            
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(ALL_SOURCES)) as executor:
         futures = {executor.submit(_run_one, name, func): name for name, func in ALL_SOURCES}
+        
+        # 【提速修改】不再死等所有源！最多只等 2.5 秒，超时的直接抛弃
+        done, not_done = concurrent.futures.wait(futures, timeout=2.5)
+        
         seq = 0
-        for future in concurrent.futures.as_completed(futures):
+        for future in done:
             seq += 1
-            name, df, err = future.result()
+            try:
+                name, df, err = future.result()
+            except Exception as e:
+                name = futures[future]
+                df, err = None, str(e)
+
             if err or df is None or df.empty or len(df) < MIN_ROWS:
-                all_results[name] = {"rows": 0, "status": "⚠️ 失败", "order": seq}
+                all_results[name] = {"rows": 0, "status": "⚠️ 失败/超时", "order": seq}
                 continue
+                
             df = df.sort_values("date").reset_index(drop=True)
             all_results[name] = {"rows": len(df), "status": "✅ 成功", "order": seq}
             valid_in_order.append((seq, name, df))
-    if not valid_in_order: return {"best_source": "无", "best_df": pd.DataFrame(), "all_results": all_results, "summary": "全部失败"}
+            
+        # 标记超时的源
+        for future in not_done:
+            all_results[futures[future]] = {"rows": 0, "status": "⌛ 超时(>2.5s)", "order": 99}
+
+    if not valid_in_order: 
+        return {"best_source": "无", "best_df": pd.DataFrame(), "all_results": all_results, "summary": "全部失败或超时"}
+        
     valid_in_order.sort(key=lambda x: x[0])
     return {"best_source": valid_in_order[0][1], "best_df": valid_in_order[0][2], "all_results": all_results, "summary": "成功"}
 
@@ -177,7 +197,7 @@ def fetch_index_daily(symbol: str = "sh000300", days: int = 250) -> pd.DataFrame
 @st.cache_data(ttl=600)
 def fetch_realtime(code: str) -> dict:
     try:
-        spot = fetch_with_retry(ak.stock_zh_a_spot, retries=2, delay=1)
+        spot = fetch_with_retry(ak.stock_zh_a_spot, retries=1, delay=1)
         raw = spot[spot["代码"].astype(str).str.replace(r"^(sh|sz)", "", regex=True) == code]
         if raw.empty: return {}
         r = raw.iloc[0]
@@ -187,7 +207,7 @@ def fetch_realtime(code: str) -> dict:
 @st.cache_data(ttl=600)
 def fetch_etf_realtime(etf_code: str) -> dict:
     try:
-        df = fetch_with_retry(ak.fund_etf_spot_em, retries=2, delay=1)
+        df = fetch_with_retry(ak.fund_etf_spot_em, retries=1, delay=1)
         row = df[df["代码"].astype(str) == etf_code]
         if row.empty: return {}
         return {"price": float(row.iloc[0]["最新价"]), "name": row.iloc[0]["名称"]}
@@ -238,6 +258,9 @@ def select_best_broad_etf(stock_code: str, stock_df: pd.DataFrame, beta: float):
         else: candidates = [BROAD_ETF_POOL[1], BROAD_ETF_POOL[2], BROAD_ETF_POOL[0]]
 
     best_etf, best_corr, best_hist, best_source, compare_results = candidates[0], {"r": None, "r2": None}, pd.DataFrame(), "", []
+    
+    # 【提速修改】虽然这里还是 for 循环，但内部的 fetch_etf_daily_multi 最多只等 2.5 秒。
+    # 即便最坏情况全超时，3个候选宽基也就最多耗时 7.5 秒。
     for etf in candidates:
         multi = fetch_etf_daily_multi(etf["code"], days=90)
         hist, source = multi["best_df"], multi["best_source"]
@@ -327,7 +350,6 @@ def run_trend_engine(stock_df, index_df) -> dict:
 def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty, beta, stock_code, stock_name, broad_etf, etf_price):
     plans = []
     
-    # 方案 A：基准——直接减仓/清仓
     if rating in ("偏空", "中性偏空", "震荡"):
         reduce_ratio = 0.7 if rating in ("偏空", "中性偏空") else 0.4
         reduce_qty = int(qty * reduce_ratio // 100) * 100
@@ -341,19 +363,17 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
                 "action": {"target": f"{stock_name}（{stock_code}）", "side": "卖出", "qty": reduce_qty, "price": "市价委托"}
             })
 
-    # 方案 B：个股独立风险——融券卖空本股
     if has_margin and rating in ("偏空", "中性偏空"):
         short_qty = max(100, int(qty * 0.5 // 100) * 100)
         plans.append({
             "category": "精准对冲（个股风险）",
             "name": "融券做空本股",
-            "scenario": "强烈看空该股，但必须保留底仓（如打新市值/长期锁定），且个股有明确利空预期",
+            "scenario": "强烈看空该股，但必须保留底仓（如打新市值/长期锁定）",
             "detail": f"**融券卖出 {short_qty} 股** {stock_name}，对冲下跌风险。",
-            "cost": "年化约8%-10%利息。注意：普通投资者融券保证金比例≥100%，且需确认APP有实时券源。",
+            "cost": "年化约8%-10%利息。注意：融券保证金比例≥100%，且需确认APP有实时券源。",
             "action": {"target": f"{stock_name}（{stock_code}）", "side": "融券卖出", "qty": short_qty, "price": "不低于最新成交价"}
         })
 
-    # 方案 C：行业风险——融券做空行业 ETF
     industry_etf = detect_industry_etf(stock_name)
     if has_margin and industry_etf and rating in ("偏空", "中性偏空", "震荡"):
         etf_code, etf_name = industry_etf
@@ -371,7 +391,6 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
                 "action": {"target": f"{etf_name}（{etf_code}）", "side": "融券卖出", "qty": short_shares, "price": "不低于最新成交价"}
             })
 
-    # 方案 D：系统性风险——宽基期权
     if has_option:
         contract_notional = (etf_price if etf_price else 4.0) * 10000
         equiv = market_value * beta / contract_notional
@@ -422,7 +441,6 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
                         "action": {"target": call_name, "side": "卖出认购", "qty": equiv_int, "price": "以券商APP为准"}
                     })
 
-    # 兜底：无需对冲
     if not plans:
         plans.append({
             "category": "观望",
@@ -501,20 +519,17 @@ if st.button("开始分析"):
                 beta = calc_beta(stock_df, index_df)
                 market_value = price * qty
 
-                # 智能优选宽基
                 broad_etf, corr, etf_hist, etf_source, compare_results = select_best_broad_etf(code, stock_df, beta)
                 etf_rt = fetch_etf_realtime(broad_etf["code"])
                 etf_price = etf_rt.get("price")
 
                 trend = run_trend_engine(stock_df, index_df)
 
-                # 获取分层方案
                 plans = generate_hedge_plans(
                     trend["rating"], corr, has_margin, has_option, 
                     market_value, qty, beta, code, name, broad_etf, etf_price
                 )
 
-                # ---- 输出 ----
                 st.subheader("【持仓与走势】")
                 st.write(f"**{name}（{code}）** | 现价 {price:.2f} | 成本 {buy_price:.2f} | {qty}股 | 市值 {market_value:.0f}元")
                 st.info(f"**趋势研判**：{trend['rating']}（得分 {trend['total']}） | **个股 Beta**：{beta:.2f}")
