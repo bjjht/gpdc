@@ -9,6 +9,7 @@ import re
 import requests
 import concurrent.futures
 from requests.exceptions import ConnectionError, Timeout
+from difflib import SequenceMatcher
 
 # ============================================================
 # 交易日判断
@@ -64,17 +65,30 @@ def _etf_to_sina_symbol(etf_code: str) -> str:
 def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
     symbol = _to_sina_symbol(code)
     start, end = get_date_range(days)
-    df = fetch_with_retry(
-        ak.stock_zh_a_daily,
-        symbol=symbol, start_date=start, end_date=end, adjust="qfq"
-    )
+    df = fetch_with_retry(ak.stock_zh_a_daily, symbol=symbol, start_date=start, end_date=end, adjust="qfq")
     if df is None or df.empty:
-        raise ValueError("获取股票历史数据失败（新浪接口），请稍后重试")
+        raise ValueError("获取股票历史数据失败")
     df = df.rename(columns={"date": "date", "open": "open", "close": "close", "high": "high", "low": "low", "volume": "volume"})
     df["date"] = pd.to_datetime(df["date"])
     df["pct_chg"] = df["close"].pct_change() * 100
     return df.sort_values("date").reset_index(drop=True)
 
+@st.cache_data(ttl=1800)
+def fetch_stock_industry(code: str) -> str:
+    """获取股票所属行业"""
+    try:
+        info = fetch_with_retry(ak.stock_individual_info_em, symbol=code)
+        if info is not None and not info.empty:
+            # 接口返回的字段名可能不同，需兼容
+            if '行业' in info['item'].values:
+                return info[info['item'] == '行业']['value'].values[0]
+            elif '行业' in info.columns:
+                return info['行业'].values[0]
+        return "未知"
+    except Exception:
+        return "未知"
+
+# 各数据源ETF日线函数
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
     start, end = get_date_range(days)
     df = ak.fund_etf_hist_em(symbol=etf_code, period="daily", start_date=start, end_date=end, adjust="qfq")
@@ -136,50 +150,35 @@ def _fetch_etf_hub(etf_code: str, days: int) -> pd.DataFrame:
         pass
     return pd.DataFrame()
 
-ALL_SOURCES = [
-    ("腾讯", _fetch_etf_tx), ("同花顺", _fetch_etf_ths), ("新浪", _fetch_etf_sina),
-    ("stockdata-hub", _fetch_etf_hub), ("quotekit", _fetch_etf_quotekit), ("东财", _fetch_etf_em)
-]
+ALL_SOURCES = [("腾讯", _fetch_etf_tx), ("同花顺", _fetch_etf_ths), ("新浪", _fetch_etf_sina), ("stockdata-hub", _fetch_etf_hub), ("quotekit", _fetch_etf_quotekit), ("东财", _fetch_etf_em)]
 MIN_ROWS = 30
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
     all_results, valid_in_order = {}, []
-    
     def _run_one(name, func):
         try:
             df = fetch_with_retry(func, etf_code, days, retries=1, delay=1)
             return name, df, None
         except Exception as e:
             return name, None, str(e)
-            
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(ALL_SOURCES)) as executor:
         futures = {executor.submit(_run_one, name, func): name for name, func in ALL_SOURCES}
         done, not_done = concurrent.futures.wait(futures, timeout=2.5)
-        
         seq = 0
         for future in done:
             seq += 1
-            try:
-                name, df, err = future.result()
-            except Exception as e:
-                name = futures[future]
-                df, err = None, str(e)
-
+            name, df, err = future.result()
             if err or df is None or df.empty or len(df) < MIN_ROWS:
                 all_results[name] = {"rows": 0, "status": "⚠️ 失败/超时", "order": seq}
                 continue
-                
             df = df.sort_values("date").reset_index(drop=True)
             all_results[name] = {"rows": len(df), "status": "✅ 成功", "order": seq}
             valid_in_order.append((seq, name, df))
-            
         for future in not_done:
             all_results[futures[future]] = {"rows": 0, "status": "⌛ 超时(>2.5s)", "order": 99}
-
     if not valid_in_order: 
         return {"best_source": "无", "best_df": pd.DataFrame(), "all_results": all_results, "summary": "全部失败或超时"}
-        
     valid_in_order.sort(key=lambda x: x[0])
     return {"best_source": valid_in_order[0][1], "best_df": valid_in_order[0][2], "all_results": all_results, "summary": "成功"}
 
@@ -209,34 +208,39 @@ def fetch_etf_realtime(etf_code: str) -> dict:
     except Exception: return {}
 
 # ============================================================
-# 扩充后的行业映射与宽基池
+# 动态行业ETF匹配
 # ============================================================
 
-INDUSTRY_KEYWORDS = {
-    # 金融
-    "证券": ("512000", "券商ETF"), "券商": ("512000", "券商ETF"), "银行": ("512800", "银行ETF"), "保险": ("512070", "保险ETF"),
-    # TMT科技
-    "半导体": ("512480", "半导体ETF"), "芯片": ("512480", "半导体ETF"), "计算机": ("512720", "计算机ETF"), "软件": ("515230", "软件ETF"),
-    "通信": ("515880", "通信ETF"), "人工智能": ("515070", "人工智能ETF"), "游戏": ("159869", "游戏ETF"), "传媒": ("512980", "传媒ETF"),
-    # 医药消费
-    "医药": ("512010", "医药ETF"), "医疗": ("512170", "医疗ETF"), "生物": ("512290", "生物医药ETF"), "消费": ("159928", "消费ETF"),
-    "白酒": ("512690", "酒ETF"), "食品": ("515710", "食品饮料ETF"), "饮料": ("515710", "食品饮料ETF"), "家电": ("159996", "家电ETF"),
-    "旅游": ("159766", "旅游ETF"), "养殖": ("159865", "养殖ETF"), "农业": ("159825", "农业ETF"),
-    # 制造与周期
-    "新能源": ("516160", "新能源ETF"), "光伏": ("515790", "光伏ETF"), "锂电": ("159755", "电池ETF"), "电池": ("159755", "电池ETF"),
-    "汽车": ("516110", "汽车ETF"), "军工": ("512660", "军工ETF"), "地产": ("512200", "房地产ETF"), "房地产": ("512200", "房地产ETF"),
-    "煤炭": ("515220", "煤炭ETF"), "有色": ("512400", "有色金属ETF"), "钢铁": ("515210", "钢铁ETF"), "化工": ("516020", "化工ETF"),
-    "黄金": ("518880", "黄金ETF"), "环保": ("512580", "环保ETF"), "电力": ("159611", "电力ETF"),
-}
+@st.cache_data(ttl=3600)
+def get_dynamic_industry_etf(industry: str) -> pd.DataFrame:
+    """根据行业名称，动态从全市场ETF中匹配最接近的行业ETF"""
+    if industry == "未知":
+        return pd.DataFrame()
+    try:
+        etf_df = ak.fund_etf_spot_em()
+        # 排除债券、货币、宽基等非行业ETF
+        exclude_keywords = ["债", "货币", "国债", "宽基", "300", "500", "1000", "50", "创业板", "科创"]
+        etf_df = etf_df[~etf_df["名称"].str.contains("|".join(exclude_keywords))]
+        
+        # 使用文本相似度匹配
+        def calculate_similarity(etf_name):
+            return SequenceMatcher(None, industry, etf_name).ratio()
+        
+        etf_df["相似度"] = etf_df["名称"].apply(calculate_similarity)
+        # 取相似度大于0.3的前3名
+        matched = etf_df[etf_df["相似度"] > 0.3].sort_values("相似度", ascending=False).head(3)
+        return matched[["代码", "名称", "相似度"]]
+    except Exception:
+        return pd.DataFrame()
 
-def detect_industry_etf(stock_name: str):
-    for kw, etf in INDUSTRY_KEYWORDS.items():
-        if kw in stock_name: return etf
-    return None
+# ============================================================
+# 宽基ETF智能优选（作为备选）
+# ============================================================
 
 BROAD_ETF_POOL = [
     {"code": "510050", "name": "上证50ETF", "index_name": "上证50"},
     {"code": "510300", "name": "300ETF", "index_name": "沪深300"},
+    {"code": "159919", "name": "300ETF(深)", "index_name": "沪深300"},
     {"code": "510500", "name": "500ETF", "index_name": "中证500"},
     {"code": "512100", "name": "1000ETF", "index_name": "中证1000"},
     {"code": "563360", "name": "A500ETF", "index_name": "中证A500"},
@@ -259,26 +263,28 @@ def calc_correlation_r2(stock_df: pd.DataFrame, etf_df: pd.DataFrame, window: in
     return {"r": round(r, 4), "r2": round(r ** 2, 4), "n": len(ret_s), "window": actual_window, "reason": ""}
 
 def select_best_broad_etf(stock_code: str, stock_df: pd.DataFrame, beta: float):
-    # 根据板块挑选更丰富的候选池
-    if stock_code.startswith(("688", "689")): 
-        candidates = [BROAD_ETF_POOL[7], BROAD_ETF_POOL[1], BROAD_ETF_POOL[4]] # 科创50, 300, A500
-    elif stock_code.startswith("30"): 
-        candidates = [BROAD_ETF_POOL[5], BROAD_ETF_POOL[6], BROAD_ETF_POOL[1], BROAD_ETF_POOL[2]] # 创业, 创业50, 300, 500
+    if stock_code.startswith(("688", "689")): candidates = [e for e in BROAD_ETF_POOL if "科创" in e["index_name"] or "沪深300" in e["index_name"]]
+    elif stock_code.startswith("30"): candidates = [e for e in BROAD_ETF_POOL if "创业板" in e["index_name"] or "沪深300" in e["index_name"] or "中证500" in e["index_name"]]
     else:
-        if beta >= 1.3: candidates = [BROAD_ETF_POOL[3], BROAD_ETF_POOL[2], BROAD_ETF_POOL[4], BROAD_ETF_POOL[1]] # 1000, 500, A500, 300
-        elif beta <= 0.8: candidates = [BROAD_ETF_POOL[0], BROAD_ETF_POOL[1], BROAD_ETF_POOL[4]] # 50, 300, A500
-        else: candidates = [BROAD_ETF_POOL[1], BROAD_ETF_POOL[4], BROAD_ETF_POOL[2], BROAD_ETF_POOL[0]] # 300, A500, 500, 50
+        if beta >= 1.3: candidates = [e for e in BROAD_ETF_POOL if "1000" in e["index_name"] or "500" in e["index_name"] or "A500" in e["index_name"] or "沪深300" in e["index_name"]]
+        elif beta <= 0.8: candidates = [e for e in BROAD_ETF_POOL if "上证50" in e["index_name"] or "沪深300" in e["index_name"] or "A500" in e["index_name"]]
+        else: candidates = [e for e in BROAD_ETF_POOL if "沪深300" in e["index_name"] or "A500" in e["index_name"] or "中证500" in e["index_name"] or "上证50" in e["index_name"]]
 
     best_etf, best_corr, best_hist, best_source, compare_results = candidates[0], {"r": None, "r2": None}, pd.DataFrame(), "", []
-    
-    for etf in candidates:
+    def test_corr(etf):
         multi = fetch_etf_daily_multi(etf["code"], days=90)
         hist, source = multi["best_df"], multi["best_source"]
         corr = calc_correlation_r2(stock_df, hist, window=60)
-        compare_results.append({"ETF代码": etf["code"], "ETF名称": etf["name"], "R²": corr["r2"] if corr["r2"] else 0})
-        if corr["r2"] is not None:
-            if best_corr["r2"] is None or corr["r2"] > best_corr["r2"]:
-                best_corr, best_etf, best_hist, best_source = corr, etf, hist, source
+        return etf, corr, hist, source
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(test_corr, etf) for etf in candidates]
+        for f in concurrent.futures.as_completed(futures):
+            etf, corr, hist, source = f.result()
+            compare_results.append({"ETF代码": etf["code"], "ETF名称": etf["name"], "R²": corr["r2"] if corr["r2"] else 0})
+            if corr["r2"] is not None:
+                if best_corr["r2"] is None or corr["r2"] > best_corr["r2"]:
+                    best_corr, best_etf, best_hist, best_source = corr, etf, hist, source
+    compare_results.sort(key=lambda x: x["R²"], reverse=True)
     return best_etf, best_corr, best_hist, best_source, compare_results
 
 def r2_grade(r2) -> dict:
@@ -357,7 +363,7 @@ def run_trend_engine(stock_df, index_df) -> dict:
 # 科学严谨·分层决策引擎
 # ============================================================
 
-def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty, beta, stock_code, stock_name, broad_etf, etf_price):
+def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty, beta, stock_code, stock_name, best_etf, etf_price, is_industry_etf):
     plans = []
     
     if rating in ("偏空", "中性偏空", "震荡"):
@@ -384,11 +390,11 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
             "action": {"target": f"{stock_name}（{stock_code}）", "side": "融券卖出", "qty": short_qty, "price": "不低于最新成交价"}
         })
 
-    industry_etf = detect_industry_etf(stock_name)
-    if has_margin and industry_etf and rating in ("偏空", "中性偏空", "震荡"):
-        etf_code, etf_name = industry_etf
+    if has_margin and is_industry_etf and rating in ("偏空", "中性偏空", "震荡"):
+        etf_code = best_etf["code"]
+        etf_name = best_etf["name"]
         etf_rt = fetch_etf_realtime(etf_code)
-        etf_px = etf_rt.get("price")
+        etf_px = etf_rt.get("price", etf_price)
         if etf_px:
             raw_shares = market_value * 1.2 / etf_px
             short_shares = max(100, int(raw_shares // 100) * 100)
@@ -409,16 +415,16 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
         if equiv_int >= 1:
             month = option_month_label()
             interval = get_strike_interval(etf_price if etf_price else 4.0)
-            put_name = format_option_name(broad_etf["name"], "沽", month, round_to_strike((etf_price or 4.0)*0.95, interval))
-            call_name = format_option_name(broad_etf["name"], "购", month, round_to_strike((etf_price or 4.0)*1.05, interval))
+            put_name = format_option_name(best_etf["name"], "沽", month, round_to_strike((etf_price or 4.0)*0.95, interval))
+            call_name = format_option_name(best_etf["name"], "购", month, round_to_strike((etf_price or 4.0)*1.05, interval))
             
             r2 = corr["r2"]
             if r2 is None or r2 < 0.09:
                 plans.append({
                     "category": "系统性对冲（大盘风险）",
-                    "name": f"⚠️ {broad_etf['name']} 期权（强烈不推荐）",
+                    "name": f"⚠️ {best_etf['name']} 期权（强烈不推荐）",
                     "scenario": "【无法使用】因该股与宽基联动性极低",
-                    "detail": f"R²仅为{r2}，宽基涨跌无法解释该股波动。如果强行买入 {put_name}，大概率是白交权利金。",
+                    "detail": f"R²仅为{r2}，涨跌无法解释该股波动。如果强行买入 {put_name}，大概率是白交权利金。",
                     "cost": "权利金极可能成为沉没成本",
                     "action": None
                 })
@@ -426,7 +432,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
                 if rating == "震荡":
                     plans.append({
                         "category": "系统性对冲（大盘风险）",
-                        "name": f"领口策略（{broad_etf['name']}）",
+                        "name": f"领口策略（{best_etf['name']}）",
                         "scenario": "既怕跌，又不想花太多钱买保险，且能接受涨幅被封顶",
                         "detail": f"**买入 {put_name} {equiv_int} 张** + **卖出 {call_name} {equiv_int} 张**。",
                         "cost": "卖购权利金抵消买沽成本（近乎零成本），代价是上方收益封顶。",
@@ -435,7 +441,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
                 elif rating in ("偏空", "中性偏空"):
                     plans.append({
                         "category": "系统性对冲（大盘风险）",
-                        "name": f"保护性认沽（{broad_etf['name']}）",
+                        "name": f"保护性认沽（{best_etf['name']}）",
                         "scenario": "担心大盘拖累个股，但不想卖出底仓，愿意支付一笔保费",
                         "detail": f"**买入 {put_name} {equiv_int} 张**，锁定下行底线。",
                         "cost": "权利金即最大损失。若个股独立上涨，权利金全损。",
@@ -444,7 +450,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
                 elif rating == "中性偏多":
                     plans.append({
                         "category": "系统性对冲（大盘风险）",
-                        "name": f"备兑开仓（{broad_etf['name']}）",
+                        "name": f"备兑开仓（{best_etf['name']}）",
                         "scenario": "温和看涨，希望用持仓增强一点收益",
                         "detail": f"**卖出 {call_name} {equiv_int} 张**，收取权利金。",
                         "cost": "需持有对应ETF现货作担保。若大涨，上方利润封顶。",
@@ -495,7 +501,7 @@ st.markdown(
     """
     <div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
       <span style="font-size:2.0rem; font-weight:800;">📊 持仓对冲分析助手</span>
-      <span style="color:#e00000; font-size:1.05rem; font-weight:700;">纯分析 · 分层风险拆解 · 科学严谨 · 操作需手动执行</span>
+      <span style="color:#e00000; font-size:1.05rem; font-weight:700;">纯分析 · 动态行业匹配 · 科学严谨 · 操作需手动执行</span>
     </div>
     """, unsafe_allow_html=True
 )
@@ -515,7 +521,7 @@ if st.button("开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        with st.spinner("正在测算风险敞口并生成分层方案..."):
+        with st.spinner("正在动态匹配行业ETF并测算风险敞口..."):
             try:
                 code = code.strip()
                 qty = int(qty)
@@ -529,26 +535,59 @@ if st.button("开始分析"):
                 beta = calc_beta(stock_df, index_df)
                 market_value = price * qty
 
-                broad_etf, corr, etf_hist, etf_source, compare_results = select_best_broad_etf(code, stock_df, beta)
-                etf_rt = fetch_etf_realtime(broad_etf["code"])
-                etf_price = etf_rt.get("price")
+                # 1. 获取股票所属行业
+                industry = fetch_stock_industry(code)
+                
+                # 2. 尝试动态匹配行业ETF
+                industry_etf_df = get_dynamic_industry_etf(industry)
+                is_industry_etf = False
+                
+                if not industry_etf_df.empty:
+                    # 找到行业ETF，取相似度最高的作为最优行业ETF
+                    best_industry_etf = {
+                        "code": industry_etf_df.iloc[0]["代码"],
+                        "name": industry_etf_df.iloc[0]["名称"]
+                    }
+                    multi = fetch_etf_daily_multi(best_industry_etf["code"], days=90)
+                    corr = calc_correlation_r2(stock_df, multi["best_df"], window=60)
+                    
+                    if corr["r2"] is not None and corr["r2"] > 0.2: # 行业匹配阈值
+                        best_etf = best_industry_etf
+                        etf_source = multi["best_source"]
+                        compare_results = industry_etf_df.to_dict('records')
+                        is_industry_etf = True
+                        etf_rt = fetch_etf_realtime(best_etf["code"])
+                        etf_price = etf_rt.get("price")
+                
+                # 3. 如果行业ETF匹配失败，降级到宽基智能优选
+                if not is_industry_etf:
+                    best_etf, corr, etf_hist, etf_source, compare_results = select_best_broad_etf(code, stock_df, beta)
+                    etf_rt = fetch_etf_realtime(best_etf["code"])
+                    etf_price = etf_rt.get("price")
 
                 trend = run_trend_engine(stock_df, index_df)
 
                 plans = generate_hedge_plans(
                     trend["rating"], corr, has_margin, has_option, 
-                    market_value, qty, beta, code, name, broad_etf, etf_price
+                    market_value, qty, beta, code, name, best_etf, etf_price, is_industry_etf
                 )
 
                 st.subheader("【持仓与走势】")
                 st.write(f"**{name}（{code}）** | 现价 {price:.2f} | 成本 {buy_price:.2f} | {qty}股 | 市值 {market_value:.0f}元")
-                st.info(f"**趋势研判**：{trend['rating']}（得分 {trend['total']}） | **个股 Beta**：{beta:.2f}")
+                st.info(f"**所属行业**：{industry} | **趋势研判**：{trend['rating']}（得分 {trend['total']}） | **个股 Beta**：{beta:.2f}")
 
-                st.subheader("【数据源智能优选宽基】")
-                st.caption("系统测试了以下候选宽基与个股的相关性，优选 R² 最高者用于期权对冲：")
-                st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
-                if corr["r2"] is not None:
-                    st.success(f"选定宽基：**{broad_etf['name']}（{broad_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
+                if is_industry_etf:
+                    st.subheader("【动态行业ETF匹配】")
+                    st.caption("系统已根据股票所属行业，从全市场ETF中动态匹配最接近的行业ETF：")
+                    st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
+                    if corr["r2"] is not None:
+                        st.success(f"最佳行业ETF：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
+                else:
+                    st.subheader("【全量期权宽基优选】")
+                    st.caption("未找到合适的行业ETF，系统已自动降级为宽基ETF智能优选：")
+                    st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
+                    if corr["r2"] is not None:
+                        st.success(f"最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
 
                 st.subheader("【科学严谨·分层对冲方案】")
                 st.write("以下方案按**风险来源**分类，请根据您的实际约束（如是否保留底仓、能否承担利息）自行选择手动执行：")
