@@ -11,7 +11,7 @@ import concurrent.futures
 from requests.exceptions import ConnectionError, Timeout
 
 # ============================================================
-# 交易日判断（支持周末 + 中国法定节假日）
+# 交易日判断
 # ============================================================
 
 try:
@@ -192,32 +192,26 @@ def _fetch_etf_hub(etf_code: str, days: int) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+# 东财由于容易被限流，排在最后（并发请求，不影响速度）
 ALL_SOURCES = [
-    ("东财", _fetch_etf_em),
     ("腾讯", _fetch_etf_tx),
-    ("新浪", _fetch_etf_sina),
     ("同花顺", _fetch_etf_ths),
-    ("quotekit", _fetch_etf_quotekit),
+    ("新浪", _fetch_etf_sina),
     ("stockdata-hub", _fetch_etf_hub),
+    ("quotekit", _fetch_etf_quotekit),
+    ("东财", _fetch_etf_em),
 ]
+
+# 恢复正常阈值（因为证明数据源没问题了）
+MIN_ROWS = 30
 
 
 # ============================================================
 # 多源并发取数：按“最快返回有效数据”选最优源
 # ============================================================
-# ⚠️ 诊断模式：MIN_ROWS 从 30 降到 5
-# 目的：如果某个源只返回了少量行（如节后数据未补齐），
-#       在 30 的阈值下会被判为“数据不足”而丢弃，
-#       看起来就像“全部源都失败”。改成 5 后可以看到真实返回情况。
-# 诊断完成后可以改回 30。
-MIN_ROWS = 5
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
-    """
-    并发向全部 6 个数据源发请求，按完成顺序收集结果。
-    最优源 = 完成顺序里第一个返回有效数据（非空且 ≥MIN_ROWS 行）的源。
-    """
     all_results = {}
     valid_in_order = []
 
@@ -257,7 +251,7 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
             if rows < MIN_ROWS:
                 all_results[name] = {
                     "rows": rows, "start": "-", "end": "-",
-                    "status": f"⚠️ 仅 {rows} 行（低于 {MIN_ROWS}）", "order": seq,
+                    "status": f"⚠️ 仅 {rows} 行", "order": seq,
                 }
                 continue
 
@@ -278,7 +272,7 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
             "best_source": "无可用源",
             "best_df": pd.DataFrame(),
             "all_results": all_results,
-            "summary": f"⚠️ 全部 {len(ALL_SOURCES)} 个数据源均未返回 {etf_code} 的有效数据。",
+            "summary": f"⚠️ 全部 {len(ALL_SOURCES)} 个数据源均未返回有效数据。",
         }
 
     valid_in_order.sort(key=lambda x: x[0])
@@ -392,39 +386,48 @@ def select_broad_etf(code: str, beta: float) -> dict:
             "match_note": f"主板 + 中等Beta（0.8<{beta:.2f}<1.3）→ 沪深300ETF"}
 
 
-def calc_correlation_r2(stock_df: pd.DataFrame, etf_df: pd.DataFrame,
-                        window: int = 60) -> dict:
-    if etf_df is None or etf_df.empty or len(stock_df) < window or len(etf_df) < window:
-        return {"r": None, "r2": None, "n": 0}
+def calc_correlation_r2(stock_df: pd.DataFrame, etf_df: pd.DataFrame, window: int = 60) -> dict:
+    """
+    ✅ 核心修复：动态调整计算窗口。
+    如果个股或ETF上市时间短，自动降级用最大可用天数（最少5天）。
+    """
+    if etf_df is None or etf_df.empty:
+        return {"r": None, "r2": None, "n": 0, "reason": "ETF数据为空"}
+
+    # 找出两者能对齐的最大天数
+    actual_window = min(window, len(stock_df) - 1, len(etf_df) - 1)
+    
+    if actual_window < 5:
+        return {"r": None, "r2": None, "n": 0, "reason": f"上市时间太短（仅{actual_window}天）"}
+
     s = stock_df[["date", "close"]].rename(columns={"close": "stock"})
     e = etf_df[["date", "close"]].rename(columns={"close": "etf"})
     merged = pd.merge(s, e, on="date", how="inner").dropna()
-    if len(merged) < 30:
-        return {"r": None, "r2": None, "n": len(merged)}
-    merged = merged.tail(window)
+
+    if len(merged) < actual_window:
+         return {"r": None, "r2": None, "n": len(merged), "reason": "对齐后的共同交易日不足"}
+
+    merged = merged.tail(actual_window)
     ret_s = merged["stock"].pct_change().dropna()
     ret_e = merged["etf"].pct_change().dropna()
-    if len(ret_s) < 20:
-        return {"r": None, "r2": None, "n": len(ret_s)}
+
+    if len(ret_s) < 5:
+        return {"r": None, "r2": None, "n": len(ret_s), "reason": "收益率数据不足"}
+
     r = float(ret_s.corr(ret_e))
-    return {"r": round(r, 4), "r2": round(r ** 2, 4), "n": len(ret_s)}
+    return {"r": round(r, 4), "r2": round(r ** 2, 4), "n": len(ret_s), "window": actual_window, "reason": ""}
 
 
 def r2_grade(r2) -> dict:
     if r2 is None:
-        return {"label": "无法计算", "color": "gray",
-                "meaning": "数据不足，无法验证实际相关性"}
+        return {"label": "无法计算", "color": "gray", "meaning": "数据不足"}
     if r2 >= 0.49:
-        return {"label": "强匹配", "color": "green",
-                "meaning": "该宽基能解释个股大部分波动，期权对冲效果相对可靠"}
+        return {"label": "强匹配", "color": "green", "meaning": "该宽基能解释个股大部分波动，期权对冲效果相对可靠"}
     if r2 >= 0.25:
-        return {"label": "中等匹配", "color": "orange",
-                "meaning": "该宽基能解释部分波动，对冲有效但不完全"}
+        return {"label": "中等匹配", "color": "orange", "meaning": "该宽基能解释部分波动，对冲有效但不完全"}
     if r2 >= 0.09:
-        return {"label": "弱匹配", "color": "red",
-                "meaning": "联动性较弱，期权对冲效果有限"}
-    return {"label": "极弱/无匹配", "color": "red",
-            "meaning": "该宽基与个股联动性很差，不建议用期权对冲"}
+        return {"label": "弱匹配", "color": "red", "meaning": "联动性较弱，期权对冲效果有限"}
+    return {"label": "极弱/无匹配", "color": "red", "meaning": "该宽基与个股联动性很差，不建议用期权对冲"}
 
 
 def get_strike_interval(etf_price: float) -> float:
@@ -470,8 +473,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def calc_beta(stock_df: pd.DataFrame, index_df: pd.DataFrame,
-              window: int = 90) -> float:
+def calc_beta(stock_df: pd.DataFrame, index_df: pd.DataFrame, window: int = 90) -> float:
     s = stock_df.set_index("date")["close"].pct_change()
     i = index_df.set_index("date")["close"].pct_change()
     joined = pd.concat([s, i], axis=1, keys=["s", "i"]).dropna().tail(window)
@@ -534,8 +536,7 @@ def score_valuation(pe_pct) -> int:
     return -2
 
 
-WEIGHTS = {"ma": 0.25, "macd": 0.20, "relative": 0.20,
-           "volume": 0.15, "valuation": 0.20}
+WEIGHTS = {"ma": 0.25, "macd": 0.20, "relative": 0.20, "volume": 0.15, "valuation": 0.20}
 
 
 def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
@@ -565,21 +566,15 @@ def run_trend_engine(stock_df, index_df, pe_pct=None) -> dict:
 # 工具匹配
 # ============================================================
 
-def match_hedge(rating: str, market_value: float, qty: int,
-                beta: float,
+def match_hedge(rating: str, market_value: float, qty: int, beta: float,
                 stock_code: str = "", stock_name: str = "",
-                broad_etf: dict = None,
-                etf_price: float = None,
-                corr: dict = None) -> dict:
+                broad_etf: dict = None, etf_price: float = None, corr: dict = None) -> dict:
 
     options = []
-
     if broad_etf is None:
-        broad_etf = {"code": "510300", "name": "300ETF", "index_name": "沪深300",
-                     "match_note": ""}
+        broad_etf = {"code": "510300", "name": "300ETF", "index_name": "沪深300", "match_note": ""}
     corr = corr or {"r": None, "r2": None, "n": 0}
     grade = r2_grade(corr["r2"])
-
     etf_price_used = etf_price if etf_price else 4.0
     price_note = "" if etf_price else "（实时价格获取失败，按参考价估算）"
 
@@ -604,17 +599,9 @@ def match_hedge(rating: str, market_value: float, qty: int,
     if market_value < 2000:
         return {"options": [{
             "tool": "直接减仓/清仓",
-            "detail": (
-                f"市值 {market_value:.0f} 元低于任何衍生品的有效规模门槛。"
-                f"**直接卖出 {qty} 股 {stock_name}（{stock_code}）**，"
-                f"市价委托即可，无利息、无权利金、无保证金。"
-            ),
+            "detail": f"市值 {market_value:.0f} 元低于任何衍生品的有效规模门槛。**直接卖出 {qty} 股 {stock_name}（{stock_code}）**，市价委托即可，无利息、无权利金、无保证金。",
             "cost_note": "仅正常交易佣金，无额外成本",
-            "action": "SELL",
-            "target": f"{stock_name}（{stock_code}）",
-            "side": "卖出",
-            "qty": qty,
-            "price_hint": "市价委托",
+            "action": "SELL", "target": f"{stock_name}（{stock_code}）", "side": "卖出", "qty": qty, "price_hint": "市价委托",
         }]}
 
     if rating in ("偏空", "中性偏空"):
@@ -626,40 +613,20 @@ def match_hedge(rating: str, market_value: float, qty: int,
 
         options.append({
             "tool": "减仓（首选）",
-            "detail": (
-                f"**卖出 {reduce_qty} 股 {stock_name}（{stock_code}）**，"
-                f"市价委托即可，减仓约 {reduce_ratio*100:.0f}%，"
-                f"无利息成本，剩余持仓 {qty - reduce_qty} 股"
-            ),
+            "detail": f"**卖出 {reduce_qty} 股 {stock_name}（{stock_code}）**，市价委托即可，减仓约 {reduce_ratio*100:.0f}%，无利息成本，剩余持仓 {qty - reduce_qty} 股",
             "cost_note": "仅正常交易佣金",
-            "action": "SELL",
-            "target": f"{stock_name}（{stock_code}）",
-            "side": "卖出",
-            "qty": reduce_qty,
-            "price_hint": "市价委托",
+            "action": "SELL", "target": f"{stock_name}（{stock_code}）", "side": "卖出", "qty": reduce_qty, "price_hint": "市价委托",
         })
-
         options.append({
             "tool": "融券部分对冲（保留底仓的备选）",
-            "detail": (
-                f"**融券卖出 {short_qty} 股 {stock_name}（{stock_code}）**，"
-                f"保留 {qty - short_qty} 股多头。"
-                f"对冲比例约 {short_qty/qty*100:.0f}%，"
-                f"**下单前务必在券商APP确认该股实时可融余量**"
-            ),
+            "detail": f"**融券卖出 {short_qty} 股 {stock_name}（{stock_code}）**，保留 {qty - short_qty} 股多头。对冲比例约 {short_qty/qty*100:.0f}%，**下单前务必在券商APP确认该股实时可融余量**",
             "cost_note": "融券年化利息约 8%，按日计提",
-            "action": "SHORT_SELL",
-            "target": f"{stock_name}（{stock_code}）",
-            "side": "融券卖出",
-            "qty": short_qty,
-            "price_hint": "不低于最新成交价",
+            "action": "SHORT_SELL", "target": f"{stock_name}（{stock_code}）", "side": "融券卖出", "qty": short_qty, "price_hint": "不低于最新成交价",
         })
-
         return {"options": options}
 
     if rating == "震荡":
         options = []
-
         industry = detect_industry_etf(stock_name)
         if industry and market_value >= 5000:
             etf_code, etf_name = industry
@@ -671,63 +638,29 @@ def match_hedge(rating: str, market_value: float, qty: int,
                 short_shares = max(100, int(raw_shares // 100) * 100)
                 options.append({
                     "tool": "融券做空行业 ETF",
-                    "detail": (
-                        f"**融券卖出 {etf_name}（{etf_code}）{short_shares} 份**，"
-                        f"对冲 {stock_name} 的板块系统性风险。"
-                        f"行业ETF券源通常比宽基更稀缺，"
-                        f"**下单前务必在“融券标的”中确认实时可融余量**"
-                    ),
+                    "detail": f"**融券卖出 {etf_name}（{etf_code}）{short_shares} 份**，对冲 {stock_name} 的板块系统性风险。行业ETF券源通常比宽基更稀缺，**下单前务必在“融券标的”中确认实时可融余量**",
                     "cost_note": "融券年化利息约 8%，券源稀缺时可能更高，以券商APP为准",
-                    "action": "SHORT_SELL",
-                    "target": f"{etf_name}（{etf_code}）",
-                    "side": "融券卖出",
-                    "qty": short_shares,
-                    "price_hint": "不低于最新成交价",
-                    "etf_detail": {
-                        "name": etf_name,
-                        "code": etf_code,
-                        "price": etf_px,
-                        "short_shares": short_shares,
-                        "industry_beta": industry_beta,
-                    },
+                    "action": "SHORT_SELL", "target": f"{etf_name}（{etf_code}）", "side": "融券卖出", "qty": short_shares, "price_hint": "不低于最新成交价",
+                    "etf_detail": {"name": etf_name, "code": etf_code, "price": etf_px, "short_shares": short_shares, "industry_beta": industry_beta},
                 })
 
         if equiv_int >= 1:
             if corr["r2"] is not None and corr["r2"] < 0.09:
                 options.append({
                     "tool": f"⚠️ {broad_etf['name']} 期权（不推荐）",
-                    "detail": (
-                        f"{match_line}"
-                        f"R² 低于 0.09，期权对冲大概率无效，**不建议执行**。"
-                        f"若坚持使用：买入 {put_name} + 卖出 {call_name}，各 {equiv_int} 张。"
-                    ),
+                    "detail": f"{match_line} R² 低于 0.09，期权对冲大概率无效，**不建议执行**。若坚持使用：买入 {put_name} + 卖出 {call_name}，各 {equiv_int} 张。",
                     "cost_note": "权利金可能成为沉没成本",
                 })
             else:
                 options.append({
                     "tool": f"领口策略（{broad_etf['name']}）",
-                    "detail": (
-                        f"{match_line}"
-                        f"**买入 {put_name} {equiv_int} 张**（防跌）"
-                        f" + **卖出 {call_name} {equiv_int} 张**（收权利金抵消成本）。"
-                        f"{broad_etf['name']} 实时参考价 **{etf_price_used:.3f} 元**{price_note}。"
-                        f"**权利金精确报价以券商APP期权T型报价为准**"
-                    ),
+                    "detail": f"{match_line} **买入 {put_name} {equiv_int} 张**（防跌） + **卖出 {call_name} {equiv_int} 张**（收权利金抵消成本）。{broad_etf['name']} 实时参考价 **{etf_price_used:.3f} 元**{price_note}。**权利金精确报价以券商APP期权T型报价为准**",
                     "cost_note": "净权利金成本较低，上方收益受限",
-                    "action": "OPTION_COLLAR",
-                    "target": f"{put_name} + {call_name}",
-                    "side": "买入认沽 + 卖出认购",
-                    "qty": equiv_int,
-                    "price_hint": "以券商APP权利金为准",
+                    "action": "OPTION_COLLAR", "target": f"{put_name} + {call_name}", "side": "买入认沽 + 卖出认购", "qty": equiv_int, "price_hint": "以券商APP权利金为准",
                 })
 
         if not options:
-            options.append({
-                "tool": "持有观望",
-                "detail": "设置止损提醒，不建对冲仓",
-                "cost_note": "无",
-            })
-
+            options.append({"tool": "持有观望", "detail": "设置止损提醒，不建对冲仓", "cost_note": "无"})
         return {"options": options}
 
     if rating == "中性偏多":
@@ -742,48 +675,22 @@ def match_hedge(rating: str, market_value: float, qty: int,
             else:
                 options.append({
                     "tool": f"备兑开仓（卖出 {broad_etf['name']} 认购）",
-                    "detail": (
-                        f"{match_line}"
-                        f"**卖出 {call_name} {equiv_int} 张**，收取权利金增厚收益。"
-                        f"需持有对应 **{broad_etf['name']}（{broad_etf['code']}）现货** 作为担保，"
-                        f"每张合约对应 10,000 份 ETF。"
-                        f"上方涨幅超过行权价时收益封顶"
-                    ),
+                    "detail": f"{match_line} **卖出 {call_name} {equiv_int} 张**，收取权利金增厚收益。需持有对应 **{broad_etf['name']}（{broad_etf['code']}）现货** 作为担保。",
                     "cost_note": "收取权利金，需有对应 ETF 现货；权利金以券商APP为准",
-                    "action": "OPTION_COVERED_CALL",
-                    "target": call_name,
-                    "side": "卖出认购",
-                    "qty": equiv_int,
-                    "price_hint": "以券商APP权利金为准",
+                    "action": "OPTION_COVERED_CALL", "target": call_name, "side": "卖出认购", "qty": equiv_int, "price_hint": "以券商APP权利金为准",
                 })
                 options.append({
                     "tool": f"保护性认沽（买入 {broad_etf['name']} 认沽）",
-                    "detail": (
-                        f"{match_line}"
-                        f"**买入 {put_name} {equiv_int} 张**，支付权利金锁定下行底线，保留上方收益。"
-                        f"最大损失为已支付的权利金"
-                    ),
+                    "detail": f"{match_line} **买入 {put_name} {equiv_int} 张**，支付权利金锁定下行底线，保留上方收益。最大损失为已支付的权利金",
                     "cost_note": "权利金为最大损失；精确报价以券商APP为准",
-                    "action": "OPTION_PROTECTIVE_PUT",
-                    "target": put_name,
-                    "side": "买入认沽",
-                    "qty": equiv_int,
-                    "price_hint": "以券商APP权利金为准",
+                    "action": "OPTION_PROTECTIVE_PUT", "target": put_name, "side": "买入认沽", "qty": equiv_int, "price_hint": "以券商APP权利金为准",
                 })
 
         if not options:
-            options.append({
-                "tool": "无需对冲",
-                "detail": "设置移动止盈/止损提醒即可",
-                "cost_note": "无",
-            })
+            options.append({"tool": "无需对冲", "detail": "设置移动止盈/止损提醒即可", "cost_note": "无"})
         return {"options": options}
 
-    return {"options": [{
-        "tool": "无需对冲",
-        "detail": "趋势偏多，设置移动止盈提醒即可",
-        "cost_note": "无",
-    }]}
+    return {"options": [{"tool": "无需对冲", "detail": "趋势偏多，设置移动止盈提醒即可", "cost_note": "无"}]}
 
 
 # ============================================================
@@ -794,106 +701,36 @@ st.set_page_config(page_title="对冲分析助手", layout="centered")
 
 st.markdown("""
 <style>
-[data-testid="stStatusWidget"],
-[data-testid="stAppRunningMan"],
-[data-testid="stConnectionStatus"],
-[data-testid="stDecoration"],
-[class*="StatusWidget"],
-[class*="stStatusWidget"],
-[class*="RunningMan"] {
-    display: none !important;
-    visibility: hidden !important;
-    opacity: 0 !important;
-    position: fixed !important;
-    top: -99999px !important;
-    left: -99999px !important;
-    width: 0 !important;
-    height: 0 !important;
-    max-width: 0 !important;
-    max-height: 0 !important;
-    overflow: hidden !important;
-    pointer-events: none !important;
-    z-index: -99999 !important;
+[data-testid="stStatusWidget"], [data-testid="stAppRunningMan"], [data-testid="stConnectionStatus"],
+[data-testid="stDecoration"], [class*="StatusWidget"], [class*="stStatusWidget"], [class*="RunningMan"] {
+    display: none !important; visibility: hidden !important; opacity: 0 !important; position: fixed !important;
+    top: -99999px !important; left: -99999px !important; width: 0 !important; height: 0 !important;
+    max-width: 0 !important; max-height: 0 !important; overflow: hidden !important; pointer-events: none !important; z-index: -99999 !important;
 }
-
 #MainMenu { visibility: hidden !important; }
-
-[data-testid="stTextInput"] label,
-[data-testid="stNumberInput"] label,
-[data-testid="stDateInput"] label {
-    font-size: 24px !important;
-    font-weight: 800 !important;
-    color: #111 !important;
-    margin-bottom: 4px !important;
+[data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stDateInput"] label {
+    font-size: 24px !important; font-weight: 800 !important; color: #111 !important; margin-bottom: 4px !important;
 }
-
-[data-testid="stTextInput"] input,
-[data-testid="stNumberInput"] input,
-[data-testid="stDateInput"] input {
-    font-size: 24px !important;
-    font-weight: 600 !important;
-    min-height: 54px !important;
-    padding: 10px 14px !important;
+[data-testid="stTextInput"] input, [data-testid="stNumberInput"] input, [data-testid="stDateInput"] input {
+    font-size: 24px !important; font-weight: 600 !important; min-height: 54px !important; padding: 10px 14px !important;
 }
-
-[data-testid="stDateInputCalendar"],
-[data-testid="stDateInputCalendar"] *,
-[data-baseweb="calendar"],
-[data-baseweb="calendar"] * {
-    font-size: 18px !important;
-    font-weight: 600 !important;
+[data-testid="stDateInputCalendar"], [data-testid="stDateInputCalendar"] *, [data-baseweb="calendar"], [data-baseweb="calendar"] * {
+    font-size: 18px !important; font-weight: 600 !important;
 }
-
-[data-testid="stDateInputCalendar"] [role="gridcell"],
-[data-testid="stDateInputCalendar"] [role="gridcell"] div,
-[data-baseweb="calendar"] [role="gridcell"],
-[data-baseweb="calendar"] [role="gridcell"] div {
-    min-width: 40px !important;
-    min-height: 40px !important;
-    line-height: 40px !important;
-    font-size: 18px !important;
-    font-weight: 600 !important;
+[data-testid="stDateInputCalendar"] [role="gridcell"], [data-testid="stDateInputCalendar"] [role="gridcell"] div,
+[data-baseweb="calendar"] [role="gridcell"], [data-baseweb="calendar"] [role="gridcell"] div {
+    min-width: 40px !important; min-height: 40px !important; line-height: 40px !important; font-size: 18px !important; font-weight: 600 !important;
 }
-
-[data-testid="stDateInputCalendar"] button,
-[data-baseweb="calendar"] button {
-    font-size: 18px !important;
-    font-weight: 600 !important;
-}
-
+[data-testid="stDateInputCalendar"] button, [data-baseweb="calendar"] button { font-size: 18px !important; font-weight: 600 !important; }
 .stButton > button {
-    font-size: 30px !important;
-    font-weight: bold !important;
-    color: #FFD700 !important;
-    background-color: #1a1a1a !important;
-    border: 3px solid #FFD700 !important;
-    padding: 14px 44px !important;
-    border-radius: 10px !important;
-    min-height: 66px !important;
-    transition: all 0.2s ease !important;
+    font-size: 30px !important; font-weight: bold !important; color: #FFD700 !important; background-color: #1a1a1a !important;
+    border: 3px solid #FFD700 !important; padding: 14px 44px !important; border-radius: 10px !important; min-height: 66px !important; transition: all 0.2s ease !important;
 }
-.stButton > button:hover {
-    background-color: #333333 !important;
-    color: #FFE55C !important;
-    border-color: #FFE55C !important;
-}
-
-[data-testid="stMarkdownContainer"] p,
-[data-testid="stMarkdownContainer"] li {
-    font-size: 18px !important;
-}
-
-[data-testid="stMetricValue"] {
-    font-size: 30px !important;
-    font-weight: 700 !important;
-}
-[data-testid="stMetricLabel"] {
-    font-size: 16px !important;
-}
-
-[data-testid="stDataFrame"] * {
-    font-size: 16px !important;
-}
+.stButton > button:hover { background-color: #333333 !important; color: #FFE55C !important; border-color: #FFE55C !important; }
+[data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li { font-size: 18px !important; }
+[data-testid="stMetricValue"] { font-size: 30px !important; font-weight: 700 !important; }
+[data-testid="stMetricLabel"] { font-size: 16px !important; }
+[data-testid="stDataFrame"] * { font-size: 16px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -901,32 +738,19 @@ st.markdown(
     """
     <div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
       <span style="font-size:2.0rem; font-weight:800;">📊 持仓对冲分析助手</span>
-      <span style="color:#e00000; font-size:1.05rem; font-weight:700;">
-        纯分析 · 不连接交易接口 · 所有操作需手动执行 · 两融和期权账户已默认开通
-      </span>
+      <span style="color:#e00000; font-size:1.05rem; font-weight:700;">纯分析 · 不连接交易接口 · 所有操作需手动执行 · 两融和期权账户已默认开通</span>
     </div>
-    """,
-    unsafe_allow_html=True
+    """, unsafe_allow_html=True
 )
 
 latest_td = get_latest_trading_day()
 cal_note = "（已跳过周末与法定节假日）" if _CALENDAR_AVAILABLE else "（⚠️ 日历库未安装，仅跳过周末）"
 st.caption(f"当前分析基准日：**{latest_td.strftime('%Y-%m-%d')}** {cal_note}")
 
-# 诊断模式提示
-st.warning(
-    "🔍 **诊断模式已启用**：数据源最小行数阈值临时降为 **5 行**（原为 30 行）。"
-    "目的是查看各数据源的**真实返回情况**——如果某个源只返回了少量行，"
-    "在 30 行阈值下会被丢弃、看起来像“全部失败”。"
-    "诊断完成后可把 `MIN_ROWS` 改回 30。"
-)
-
 col1, col2 = st.columns(2)
 code = col1.text_input("股票代码", "")
-buy_price = col1.number_input("买入价", value=None, step=0.01,
-                              format="%.2f", placeholder="如 23.00")
-qty = col2.number_input("数量（股）", value=None, step=100,
-                        placeholder="如 100")
+buy_price = col1.number_input("买入价", value=None, step=0.01, format="%.2f", placeholder="如 23.00")
+qty = col2.number_input("数量（股）", value=None, step=100, placeholder="如 100")
 buy_date = col2.date_input("买入日期", value=None)
 
 if st.button("🔄 强制刷新数据源", help="清空缓存并重新向所有数据源发起请求"):
@@ -974,7 +798,6 @@ if st.button("开始分析"):
                     broad_etf=broad_etf, etf_price=etf_price, corr=corr,
                 )
 
-                # ---- 输入股票 → 宽基 ETF 映射说明 ----
                 st.subheader("【输入股票 → 宽基 ETF 映射】")
                 st.markdown(
                     f"- **输入股票**：{name}（{code}）\n"
@@ -984,7 +807,6 @@ if st.button("开始分析"):
                     f"- **用于取数的探测标的**：{broad_etf['code']}"
                 )
 
-                # ---- 多源结果汇总（按完成顺序展示） ----
                 st.subheader("【数据源汇总】")
                 st.markdown(summary)
 
@@ -1001,32 +823,20 @@ if st.button("开始分析"):
                         })
                     df_src = pd.DataFrame(rows_src).sort_values("完成序号")
                     st.dataframe(df_src, use_container_width=True, hide_index=True)
-                    st.caption(
-                        "最优源规则：**并发请求所有源，按完成顺序排序，"
-                        "第一个返回有效数据的源即为最优源。**"
-                        f"当前诊断阈值：最少 **{MIN_ROWS}** 行。"
-                    )
+                    st.caption("最优源规则：**并发请求所有源，按完成顺序排序，第一个返回有效数据的源即为最优源。**")
 
                 st.subheader("【持仓概览】")
-                st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | "
-                         f"{qty}股 | 市值 {market_value:.0f}元 | 浮盈亏 {pnl:+.0f}元")
+                st.write(f"**{name}（{code}）** 现价 {price:.2f} | 成本 {buy_price:.2f} | {qty}股 | 市值 {market_value:.0f}元 | 浮盈亏 {pnl:+.0f}元")
 
                 st.subheader(f"【趋势判断】{trend['rating']}（加权得分 {trend['total']}）")
-                SCORE_LABELS = {
-                    "ma": ("均线系统", 0.25), "macd": ("MACD动能", 0.20),
-                    "relative": ("相对强弱", 0.20), "volume": ("量能", 0.15),
-                    "valuation": ("估值分位", 0.20),
-                }
+                SCORE_LABELS = {"ma": ("均线系统", 0.25), "macd": ("MACD动能", 0.20), "relative": ("相对强弱", 0.20), "volume": ("量能", 0.15), "valuation": ("估值分位", 0.20)}
                 rows = []
                 for key, (label, weight) in SCORE_LABELS.items():
                     raw = trend["scores"][key]
-                    rows.append({"维度": label, "得分": raw,
-                                 "权重": f"{int(weight*100)}%",
-                                 "加权分": round(raw * weight, 2)})
+                    rows.append({"维度": label, "得分": raw, "权重": f"{int(weight*100)}%", "加权分": round(raw * weight, 2)})
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-                st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | "
-                         f"多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
+                st.write(f"支撑 **{trend['support']}** | 压力 **{trend['resistance']}** | 多空分界 **{trend['pivot']}** | Beta **{beta:.2f}**")
 
                 st.subheader("【宽基匹配度验证】")
                 st.write(
@@ -1041,36 +851,25 @@ if st.button("开始分析"):
                     col_b.metric("R²（拟合优度）", f"{corr['r2']:.3f}")
                     col_c.metric("匹配度等级", grade["label"])
 
-                    if grade["color"] == "green":
-                        st.success(f"✅ {grade['meaning']}")
-                    elif grade["color"] == "orange":
-                        st.warning(f"⚠️ {grade['meaning']}")
-                    else:
-                        st.error(f"❌ {grade['meaning']}")
+                    if grade["color"] == "green": st.success(f"✅ {grade['meaning']}")
+                    elif grade["color"] == "orange": st.warning(f"⚠️ {grade['meaning']}")
+                    else: st.error(f"❌ {grade['meaning']}")
 
                     st.caption(
                         f"使用最快有效源：**{etf_source}**。"
-                        f"基于最近 {corr['n']} 个交易日的日收益率对齐计算。"
+                        f"基于最近 {corr.get('window', corr['n'])} 个交易日的日收益率对齐计算。"
                     )
                 else:
                     st.warning(
-                        f"⚠️ 全部 6 个数据源均未返回 "
-                        f"{broad_etf['name']}（{broad_etf['code']}）的行数达到 {MIN_ROWS} 行的有效历史日线。"
-                        f"无法计算实际相关性，下方期权建议仅基于 Beta 和规则初选。"
+                        f"⚠️ 无法计算相关性：{corr.get('reason', '数据不足')}。"
+                        f"下方期权建议仅基于 Beta 和规则初选。"
                     )
-                    if len(etf_hist) > 0:
-                        st.info(
-                            f"不过，最优源 {etf_source} 返回了 {len(etf_hist)} 行数据，"
-                            f"虽然不足以做 60 日相关性计算，但说明该数据源本身是可用的。"
-                        )
 
                 st.subheader("【工具匹配 · 具体执行指令】")
                 opts = hedge.get("options", [])
                 for i, opt in enumerate(opts, 1):
-                    if len(opts) > 1:
-                        st.markdown(f"### 方案 {i}：{opt['tool']}")
-                    else:
-                        st.markdown(f"### {opt['tool']}")
+                    if len(opts) > 1: st.markdown(f"### 方案 {i}：{opt['tool']}")
+                    else: st.markdown(f"### {opt['tool']}")
 
                     if "action" in opt:
                         st.markdown(
@@ -1079,25 +878,16 @@ if st.button("开始分析"):
                             f"- **数量**：**{opt['qty']}**\n"
                             f"- **价格**：{opt['price_hint']}"
                         )
-
                     if "etf_detail" in opt:
                         d = opt["etf_detail"]
-                        st.markdown(
-                            f"- **行业 Beta 估计**：{d['industry_beta']}\n"
-                            f"- **实时参考价**：**{d['price']:.3f} 元**"
-                        )
+                        st.markdown(f"- **行业 Beta 估计**：{d['industry_beta']}\n- **实时参考价**：**{d['price']:.3f} 元**")
 
                     st.info(opt["detail"])
                     st.warning(f"成本：{opt['cost_note']}")
-
-                    if i < len(opts):
-                        st.divider()
+                    if i < len(opts): st.divider()
 
                 st.subheader("【手动执行提示】")
-                st.warning(
-                    "以上指令均为参考，请在券商 APP 中核对实时价格、券源、权利金后再手动下单。"
-                    "本工具不发送任何委托。"
-                )
+                st.warning("以上指令均为参考，请在券商 APP 中核对实时价格、券源、权利金后再手动下单。本工具不发送任何委托。")
 
             except Exception as e:
                 st.error(f"数据获取或计算失败：{e}")
