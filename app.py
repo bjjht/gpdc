@@ -205,16 +205,21 @@ ALL_SOURCES = [
 # ============================================================
 # 多源并发取数：按“最快返回有效数据”选最优源
 # ============================================================
+# ⚠️ 诊断模式：MIN_ROWS 从 30 降到 5
+# 目的：如果某个源只返回了少量行（如节后数据未补齐），
+#       在 30 的阈值下会被判为“数据不足”而丢弃，
+#       看起来就像“全部源都失败”。改成 5 后可以看到真实返回情况。
+# 诊断完成后可以改回 30。
+MIN_ROWS = 5
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
     """
     并发向全部 6 个数据源发请求，按完成顺序收集结果。
-    最优源 = 完成顺序里第一个返回有效数据（非空且 ≥30 行）的源。
-    等所有源都完成后统一返回，保证“每个源的结果”表格完整。
+    最优源 = 完成顺序里第一个返回有效数据（非空且 ≥MIN_ROWS 行）的源。
     """
     all_results = {}
-    valid_in_order = []   # (完成序号, name, df, rows, end_date)
+    valid_in_order = []
 
     def _run_one(name, func):
         try:
@@ -241,15 +246,22 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
                 }
                 continue
 
-            if df is None or df.empty or len(df) < 30:
+            if df is None or df.empty:
                 all_results[name] = {
                     "rows": 0, "start": "-", "end": "-",
-                    "status": "⚠️ 空或数据不足", "order": seq,
+                    "status": "⚠️ 返回空", "order": seq,
+                }
+                continue
+
+            rows = len(df)
+            if rows < MIN_ROWS:
+                all_results[name] = {
+                    "rows": rows, "start": "-", "end": "-",
+                    "status": f"⚠️ 仅 {rows} 行（低于 {MIN_ROWS}）", "order": seq,
                 }
                 continue
 
             df = df.sort_values("date").reset_index(drop=True)
-            rows = len(df)
             start_d = df["date"].min()
             end_d = df["date"].max()
             all_results[name] = {
@@ -269,7 +281,6 @@ def fetch_etf_daily_multi(etf_code: str, days: int = 120) -> dict:
             "summary": f"⚠️ 全部 {len(ALL_SOURCES)} 个数据源均未返回 {etf_code} 的有效数据。",
         }
 
-    # 已按 as_completed 的完成顺序追加，valid_in_order[0] 就是最快返回有效数据的源
     valid_in_order.sort(key=lambda x: x[0])
     best_seq, best_name, best_df, best_rows, best_end = valid_in_order[0]
 
@@ -902,6 +913,14 @@ latest_td = get_latest_trading_day()
 cal_note = "（已跳过周末与法定节假日）" if _CALENDAR_AVAILABLE else "（⚠️ 日历库未安装，仅跳过周末）"
 st.caption(f"当前分析基准日：**{latest_td.strftime('%Y-%m-%d')}** {cal_note}")
 
+# 诊断模式提示
+st.warning(
+    "🔍 **诊断模式已启用**：数据源最小行数阈值临时降为 **5 行**（原为 30 行）。"
+    "目的是查看各数据源的**真实返回情况**——如果某个源只返回了少量行，"
+    "在 30 行阈值下会被丢弃、看起来像“全部失败”。"
+    "诊断完成后可把 `MIN_ROWS` 改回 30。"
+)
+
 col1, col2 = st.columns(2)
 code = col1.text_input("股票代码", "")
 buy_price = col1.number_input("买入价", value=None, step=0.01,
@@ -969,7 +988,7 @@ if st.button("开始分析"):
                 st.subheader("【数据源汇总】")
                 st.markdown(summary)
 
-                with st.expander("📋 每个数据源的详细结果（按完成顺序）", expanded=False):
+                with st.expander("📋 每个数据源的详细结果（按完成顺序）", expanded=True):
                     rows_src = []
                     for src_name, info in all_results.items():
                         rows_src.append({
@@ -984,8 +1003,8 @@ if st.button("开始分析"):
                     st.dataframe(df_src, use_container_width=True, hide_index=True)
                     st.caption(
                         "最优源规则：**并发请求所有源，按完成顺序排序，"
-                        "第一个返回有效数据（非空且≥30行）的源即为最优源。**"
-                        "完成序号越小，说明该源返回得越快。"
+                        "第一个返回有效数据的源即为最优源。**"
+                        f"当前诊断阈值：最少 **{MIN_ROWS}** 行。"
                     )
 
                 st.subheader("【持仓概览】")
@@ -1035,10 +1054,15 @@ if st.button("开始分析"):
                     )
                 else:
                     st.warning(
-                        f"⚠️ 全部 6 个数据源均未能获取 "
-                        f"{broad_etf['name']}（{broad_etf['code']}）的有效历史日线，"
-                        f"无法计算实际相关性。下方期权建议仅基于 Beta 和规则初选。"
+                        f"⚠️ 全部 6 个数据源均未返回 "
+                        f"{broad_etf['name']}（{broad_etf['code']}）的行数达到 {MIN_ROWS} 行的有效历史日线。"
+                        f"无法计算实际相关性，下方期权建议仅基于 Beta 和规则初选。"
                     )
+                    if len(etf_hist) > 0:
+                        st.info(
+                            f"不过，最优源 {etf_source} 返回了 {len(etf_hist)} 行数据，"
+                            f"虽然不足以做 60 日相关性计算，但说明该数据源本身是可用的。"
+                        )
 
                 st.subheader("【工具匹配 · 具体执行指令】")
                 opts = hedge.get("options", [])
