@@ -529,12 +529,11 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (暗黑金融终端风 - 全面优化白底问题)
+# 主界面 (暗黑金融终端风 - 终极修复)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
 
-# 深度定制 CSS
 st.markdown("""
 <style>
 /* 隐藏 Streamlit 默认元素 */
@@ -569,10 +568,9 @@ header { visibility: hidden !important; }
 /* 输入框标签 */
 [data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stDateInput"] label {
     font-size: 18px !important; font-weight: 600 !important; color: #94A3B8 !important; margin-bottom: 4px !important;
-    letter-spacing: 0.5px;
 }
 
-/* 彻底解决输入框内部的白底问题 (Text, Number, Date) */
+/* 输入框内部 */
 [data-baseweb="input"], [data-baseweb="base-input"] {
     background-color: #1A2332 !important;
     border: 1px solid #2D3748 !important;
@@ -587,41 +585,75 @@ header { visibility: hidden !important; }
     font-size: 22px !important; min-height: 54px !important;
     padding: 10px 14px !important;
 }
-[data-testid="stTextInput"] input:focus, 
-[data-testid="stNumberInput"] input:focus, 
-[data-testid="stDateInput"] input:focus {
-    border-color: #00E5FF !important; box-shadow: 0 0 8px rgba(0, 229, 255, 0.2) !important;
-}
 [data-testid="stDateInput"] svg { width: 24px !important; height: 24px !important; fill: #00E5FF; color: #00E5FF; }
 
-/* 解决数字输入框的 + - 按钮白底问题 */
-[data-testid="stNumberInputStepUp"],
-[data-testid="stNumberInputStepDown"] {
-    background-color: transparent !important;
-    color: #00E5FF !important;
-    border-left: 1px solid #2D3748 !important;
+/* 数字框加减按钮 */
+[data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"] {
+    background-color: transparent !important; color: #00E5FF !important; border-left: 1px solid #2D3748 !important;
 }
-[data-testid="stNumberInputStepUp"]:hover,
-[data-testid="stNumberInputStepDown"]:hover {
-    background-color: rgba(0,229,255,0.1) !important;
-}
-[data-testid="stNumberInput"] button {
-    background-color: transparent !important; color: #94A3B8 !important; border: none !important;
-}
-[data-testid="stNumberInput"] button:hover { color: #00E5FF !important; }
+[data-testid="stNumberInput"] button { background-color: transparent !important; color: #94A3B8 !important; border: none !important; }
 
-/* 日期弹窗全面暗黑化 */
+/* ============================================================
+   彻底解决日历弹窗问题（去除红底红字，全量暗黑+青色高亮）
+   ============================================================ */
 [data-testid="stDateInputCalendar"] {
     background-color: #1A2332 !important;
-    color: #E2E8F0 !important;
     border: 1px solid #2D3748 !important;
     box-shadow: 0 10px 25px rgba(0,0,0,0.5) !important;
 }
-[data-testid="stDateInputCalendar"] * { color: #E2E8F0 !important; font-size: 20px !important; font-weight: 600 !important; }
-[data-testid="stDateInputCalendar"] [role="gridcell"] { min-width: 46px !important; min-height: 46px !important; }
-[data-testid="stDateInputCalendar"] [role="gridcell"]:hover { background-color: rgba(0,229,255,0.2) !important; border-radius: 4px; }
-[data-testid="stDateInputCalendar"] [aria-selected="true"] { background-color: #00E5FF !important; color: #000 !important; border-radius: 4px; }
-[data-testid="stDateInputCalendar"] [aria-selected="true"] * { color: #000 !important; }
+/* 弹窗内所有文字强制为浅色 */
+[data-testid="stDateInputCalendar"] * { 
+    color: #E2E8F0 !important; 
+    font-size: 20px !important; 
+    font-weight: 600 !important; 
+    text-decoration: none !important;
+}
+/* 去掉原先诡异的下划线 */
+[data-testid="stDateInputCalendar"] [role="gridcell"] { 
+    min-width: 46px !important; min-height: 46px !important; 
+    text-decoration: none !important;
+}
+/* 鼠标悬浮 */
+[data-testid="stDateInputCalendar"] [role="gridcell"]:hover { 
+    background-color: rgba(0,229,255,0.2) !important; border-radius: 4px; 
+}
+/* 选中日期的背景和文字（覆盖原生的红色） */
+[data-testid="stDateInputCalendar"] [aria-selected="true"],
+[data-baseweb="calendar"] [aria-selected="true"] { 
+    background-color: #00E5FF !important; 
+    color: #090C10 !important; 
+    border-radius: 4px; 
+}
+[data-testid="stDateInputCalendar"] [aria-selected="true"] *,
+[data-baseweb="calendar"] [aria-selected="true"] * { 
+    color: #090C10 !important; 
+    background-color: transparent !important;
+}
+
+/* ============================================================
+   彻底解决 Expander(折叠面板) 白底白字问题
+   ============================================================ */
+[data-testid="stExpander"] {
+    background-color: #111820 !important; 
+    border: 1px solid #1E293B !important; 
+    border-radius: 8px !important;
+    box-shadow: none !important;
+}
+/* 折叠面板的标题区背景透明，文字亮青色 */
+[data-testid="stExpander"] details,
+[data-testid="stExpander"] summary {
+    background-color: transparent !important;
+    color: #00E5FF !important; 
+    font-weight: 700 !important; 
+    font-size: 18px !important;
+}
+[data-testid="stExpander"] summary:hover {
+    color: #00B4D8 !important;
+}
+/* 折叠面板内部的文字默认为浅灰 */
+[data-testid="stExpander"] .stMarkdown p {
+    color: #E2E8F0 !important;
+}
 
 /* 按钮 */
 .stButton > button {
@@ -645,8 +677,7 @@ header { visibility: hidden !important; }
 /* 卡片面板 */
 .terminal-card {
     background: #111820; border: 1px solid #1E293B; border-radius: 10px;
-    padding: 20px; margin-bottom: 20px;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
 }
 .card-header {
     font-size: 14px; color: #64748B; font-weight: 700; letter-spacing: 1px; margin-bottom: 12px;
@@ -663,14 +694,6 @@ header { visibility: hidden !important; }
     background-color: #111820 !important; border-radius: 8px; border: 1px solid #1E293B;
 }
 [data-testid="stDataFrame"] * { font-size: 15px !important; color: #E2E8F0; }
-
-/* 折叠面板 */
-[data-testid="stExpander"] {
-    background: #111820 !important; border: 1px solid #1E293B !important; border-radius: 8px !important;
-}
-[data-testid="stExpander"] summary {
-    color: #00E5FF !important; font-weight: 700 !important; font-size: 18px !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
