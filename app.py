@@ -9,7 +9,6 @@ import re
 import requests
 import concurrent.futures
 from requests.exceptions import ConnectionError, Timeout
-from difflib import SequenceMatcher
 
 # ============================================================
 # 交易日判断
@@ -75,18 +74,17 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
 
 @st.cache_data(ttl=1800)
 def fetch_stock_industry(code: str) -> str:
-    """获取股票所属行业"""
+    """获取股票所属行业，兼容不同接口的返回"""
     try:
         info = fetch_with_retry(ak.stock_individual_info_em, symbol=code)
         if info is not None and not info.empty:
-            # 接口返回的字段名可能不同，需兼容
-            if '行业' in info['item'].values:
-                return info[info['item'] == '行业']['value'].values[0]
-            elif '行业' in info.columns:
-                return info['行业'].values[0]
-        return "未知"
+            if 'item' in info.columns and 'value' in info.columns:
+                row = info[info['item'].str.contains('行业', na=False)]
+                if not row.empty:
+                    return row.iloc[0]['value']
     except Exception:
-        return "未知"
+        pass
+    return "未知"
 
 # 各数据源ETF日线函数
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
@@ -208,30 +206,56 @@ def fetch_etf_realtime(etf_code: str) -> dict:
     except Exception: return {}
 
 # ============================================================
-# 动态行业ETF匹配
+# 稳健的行业ETF匹配（静态+动态包含匹配）
 # ============================================================
 
+INDUSTRY_KEYWORDS = {
+    "证券": ("512000", "券商ETF"), "券商": ("512000", "券商ETF"), "银行": ("512800", "银行ETF"), "保险": ("512070", "保险ETF"),
+    "半导体": ("512480", "半导体ETF"), "芯片": ("512480", "半导体ETF"), "计算机": ("512720", "计算机ETF"), "软件": ("515230", "软件ETF"),
+    "通信": ("515880", "通信ETF"), "人工智能": ("515070", "人工智能ETF"), "游戏": ("159869", "游戏ETF"), "传媒": ("512980", "传媒ETF"),
+    "医药": ("512010", "医药ETF"), "医疗": ("512170", "医疗ETF"), "生物": ("512290", "生物医药ETF"), "消费": ("159928", "消费ETF"),
+    "白酒": ("512690", "酒ETF"), "食品": ("515710", "食品饮料ETF"), "饮料": ("515710", "食品饮料ETF"), "家电": ("159996", "家电ETF"),
+    "旅游": ("159766", "旅游ETF"), "养殖": ("159865", "养殖ETF"), "农业": ("159825", "农业ETF"),
+    "新能源": ("516160", "新能源ETF"), "光伏": ("515790", "光伏ETF"), "锂电": ("159755", "电池ETF"), "电池": ("159755", "电池ETF"),
+    "汽车": ("516110", "汽车ETF"), "军工": ("512660", "军工ETF"), "地产": ("512200", "房地产ETF"), "房地产": ("512200", "房地产ETF"),
+    "煤炭": ("515220", "煤炭ETF"), "有色": ("512400", "有色金属ETF"), "钢铁": ("515210", "钢铁ETF"), "化工": ("516020", "化工ETF"),
+    "黄金": ("518880", "黄金ETF"), "环保": ("512580", "环保ETF"), "电力": ("159611", "电力ETF"),
+}
+
 @st.cache_data(ttl=3600)
-def get_dynamic_industry_etf(industry: str) -> pd.DataFrame:
-    """根据行业名称，动态从全市场ETF中匹配最接近的行业ETF"""
-    if industry == "未知":
-        return pd.DataFrame()
+def find_industry_etf(stock_name: str, industry_name: str):
+    """
+    稳健的行业ETF匹配：
+    1. 优先在行业名/股票名中查静态字典
+    2. 没查到，则拉取全市场ETF，用"行业名"做包含匹配
+    """
+    # 1. 静态字典
+    for kw, etf in INDUSTRY_KEYWORDS.items():
+        if kw in industry_name or kw in stock_name:
+            return {"code": etf[0], "name": etf[1]}
+
+    # 2. 动态匹配
+    if industry_name == "未知":
+        return None
+        
     try:
         etf_df = ak.fund_etf_spot_em()
-        # 排除债券、货币、宽基等非行业ETF
-        exclude_keywords = ["债", "货币", "国债", "宽基", "300", "500", "1000", "50", "创业板", "科创"]
-        etf_df = etf_df[~etf_df["名称"].str.contains("|".join(exclude_keywords))]
+        # 排除债券、货币等，不排除带数字的（如消费50）
+        mask = ~etf_df["名称"].str.contains("债|货币|国债|短融|城投|转债")
+        etf_df = etf_df[mask]
         
-        # 使用文本相似度匹配
-        def calculate_similarity(etf_name):
-            return SequenceMatcher(None, industry, etf_name).ratio()
-        
-        etf_df["相似度"] = etf_df["名称"].apply(calculate_similarity)
-        # 取相似度大于0.3的前3名
-        matched = etf_df[etf_df["相似度"] > 0.3].sort_values("相似度", ascending=False).head(3)
-        return matched[["代码", "名称", "相似度"]]
+        # 尝试直接用行业名去匹配ETF名称（比如行业叫"半导体"，找名字里带"半导体"的ETF）
+        # 注意：有些行业名带罗马数字，如"证券Ⅱ"，我们要去掉后面的符号再匹配
+        clean_industry = re.sub(r'[^\u4e00-\u9fa5]', '', industry_name) 
+        if clean_industry:
+            matched = etf_df[etf_df["名称"].str.contains(clean_industry)]
+            if not matched.empty:
+                # 尽量选规模大或名字简短的，这里取第一个
+                return {"code": matched.iloc[0]["代码"], "name": matched.iloc[0]["名称"]}
+                
     except Exception:
-        return pd.DataFrame()
+        pass
+    return None
 
 # ============================================================
 # 宽基ETF智能优选（作为备选）
@@ -390,6 +414,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
             "action": {"target": f"{stock_name}（{stock_code}）", "side": "融券卖出", "qty": short_qty, "price": "不低于最新成交价"}
         })
 
+    # 行业对冲方案：只要匹配到了行业ETF（无论是静态还是动态），就在这里展示
     if has_margin and is_industry_etf and rating in ("偏空", "中性偏空", "震荡"):
         etf_code = best_etf["code"]
         etf_name = best_etf["name"]
@@ -423,7 +448,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
                 plans.append({
                     "category": "系统性对冲（大盘风险）",
                     "name": f"⚠️ {best_etf['name']} 期权（强烈不推荐）",
-                    "scenario": "【无法使用】因该股与宽基联动性极低",
+                    "scenario": "【无法使用】因该股与对标ETF联动性极低",
                     "detail": f"R²仅为{r2}，涨跌无法解释该股波动。如果强行买入 {put_name}，大概率是白交权利金。",
                     "cost": "权利金极可能成为沉没成本",
                     "action": None
@@ -521,7 +546,7 @@ if st.button("开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        with st.spinner("正在动态匹配行业ETF并测算风险敞口..."):
+        with st.spinner("正在获取行业分类并测算最优ETF..."):
             try:
                 code = code.strip()
                 qty = int(qty)
@@ -535,31 +560,25 @@ if st.button("开始分析"):
                 beta = calc_beta(stock_df, index_df)
                 market_value = price * qty
 
-                # 1. 获取股票所属行业
+                # 1. 获取真实行业分类
                 industry = fetch_stock_industry(code)
                 
-                # 2. 尝试动态匹配行业ETF
-                industry_etf_df = get_dynamic_industry_etf(industry)
+                # 2. 匹配行业ETF（静态+动态）
+                matched_industry = find_industry_etf(name, industry)
                 is_industry_etf = False
                 
-                if not industry_etf_df.empty:
-                    # 找到行业ETF，取相似度最高的作为最优行业ETF
-                    best_industry_etf = {
-                        "code": industry_etf_df.iloc[0]["代码"],
-                        "name": industry_etf_df.iloc[0]["名称"]
-                    }
-                    multi = fetch_etf_daily_multi(best_industry_etf["code"], days=90)
+                if matched_industry:
+                    multi = fetch_etf_daily_multi(matched_industry["code"], days=90)
                     corr = calc_correlation_r2(stock_df, multi["best_df"], window=60)
-                    
-                    if corr["r2"] is not None and corr["r2"] > 0.2: # 行业匹配阈值
-                        best_etf = best_industry_etf
-                        etf_source = multi["best_source"]
-                        compare_results = industry_etf_df.to_dict('records')
-                        is_industry_etf = True
-                        etf_rt = fetch_etf_realtime(best_etf["code"])
-                        etf_price = etf_rt.get("price")
+                    # 关键修复：只要匹配到行业ETF，无论R²多少，都展示！让用户自己看相关性决定用不用！
+                    best_etf = matched_industry
+                    etf_source = multi["best_source"]
+                    compare_results = [{"ETF代码": best_etf["code"], "ETF名称": best_etf["name"], "R²": corr["r2"] if corr["r2"] else 0}]
+                    is_industry_etf = True
+                    etf_rt = fetch_etf_realtime(best_etf["code"])
+                    etf_price = etf_rt.get("price")
                 
-                # 3. 如果行业ETF匹配失败，降级到宽基智能优选
+                # 3. 如果完全没匹配到行业ETF，才降级到宽基
                 if not is_industry_etf:
                     best_etf, corr, etf_hist, etf_source, compare_results = select_best_broad_etf(code, stock_df, beta)
                     etf_rt = fetch_etf_realtime(best_etf["code"])
@@ -578,13 +597,17 @@ if st.button("开始分析"):
 
                 if is_industry_etf:
                     st.subheader("【动态行业ETF匹配】")
-                    st.caption("系统已根据股票所属行业，从全市场ETF中动态匹配最接近的行业ETF：")
+                    st.caption("系统已根据您输入股票的所属行业，自动匹配到对应的行业ETF：")
                     st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
                     if corr["r2"] is not None:
-                        st.success(f"最佳行业ETF：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
+                        grade = r2_grade(corr["r2"])
+                        if grade["label"] in ["强匹配", "中等匹配"]:
+                            st.success(f"匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 适合作为行业对冲工具。")
+                        else:
+                            st.warning(f"匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 相关性偏低，行业对冲效果可能有限，请谨慎使用。")
                 else:
                     st.subheader("【全量期权宽基优选】")
-                    st.caption("未找到合适的行业ETF，系统已自动降级为宽基ETF智能优选：")
+                    st.caption("系统未能匹配到对应的行业ETF，已自动降级为宽基ETF优选：")
                     st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
                     if corr["r2"] is not None:
                         st.success(f"最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
