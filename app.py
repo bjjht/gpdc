@@ -529,72 +529,137 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面
+# 主界面 (暗黑金融终端风)
 # ============================================================
 
-st.set_page_config(page_title="对冲分析助手", layout="centered")
+st.set_page_config(page_title="量化对冲终端", layout="centered")
 
-# ============================================================
-# 【修复重点】强制放大日期框，但不再撑坏内部布局
-# ============================================================
+# 深度定制 CSS
 st.markdown("""
 <style>
+/* 隐藏 Streamlit 默认元素 */
 [data-testid="stStatusWidget"], [data-testid="stAppRunningMan"], [class*="RunningMan"] { display: none !important; }
 #MainMenu { visibility: hidden !important; }
+header { visibility: hidden !important; }
 
-/* 统一所有输入框标签 */
-[data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stDateInput"] label {
-    font-size: 24px !important; font-weight: 800 !important; color: #111 !important; margin-bottom: 4px !important;
+/* 全局背景和字体 */
+.stApp {
+    background: linear-gradient(135deg, #090C10 0%, #111820 100%);
+    color: #E2E8F0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+[data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li {
+    color: #E2E8F0;
+    font-size: 16px !important;
 }
 
-/* 统一输入框内部文本大小（只针对 input，不破坏 div 结构） */
+/* 标题区 */
+.terminal-header {
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;
+    padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.terminal-title {
+    font-size: 2.2rem; font-weight: 900; color: #00E5FF; letter-spacing: 1px;
+    text-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
+}
+.terminal-subtitle {
+    color: #FF3366; font-size: 1rem; font-weight: 600; letter-spacing: 0.5px;
+}
+
+/* 输入框标签 */
+[data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stDateInput"] label {
+    font-size: 18px !important; font-weight: 600 !important; color: #94A3B8 !important; margin-bottom: 4px !important;
+    letter-spacing: 0.5px;
+}
+
+/* 输入框内部 */
 [data-testid="stTextInput"] input, 
 [data-testid="stNumberInput"] input, 
 [data-testid="stDateInput"] input {
-    font-size: 24px !important; font-weight: 600 !important; min-height: 54px !important;
+    background-color: #1A2332 !important; color: #00E5FF !important;
+    border: 1px solid #2D3748 !important; border-radius: 6px !important;
+    font-family: 'Courier New', Courier, monospace !important; font-weight: 700 !important;
+    font-size: 22px !important; min-height: 54px !important;
+    padding: 10px 14px !important;
+    transition: all 0.3s ease;
 }
-
-/* 放大日期选择器右侧的日历图标 */
-[data-testid="stDateInput"] svg {
-    width: 24px !important; height: 24px !important;
+[data-testid="stTextInput"] input:focus, 
+[data-testid="stNumberInput"] input:focus, 
+[data-testid="stDateInput"] input:focus {
+    border-color: #00E5FF !important; box-shadow: 0 0 8px rgba(0, 229, 255, 0.2) !important;
 }
+[data-testid="stDateInput"] svg { width: 24px !important; height: 24px !important; fill: #00E5FF; }
 
-/* 日期弹窗内部放大 */
+/* 日期弹窗 */
 [data-testid="stDateInputCalendar"] *, [data-baseweb="calendar"] * {
     font-size: 22px !important; font-weight: 700 !important;
 }
-[data-testid="stDateInputCalendar"] [role="gridcell"], 
-[data-baseweb="calendar"] [role="gridcell"] {
+[data-testid="stDateInputCalendar"] [role="gridcell"], [data-baseweb="calendar"] [role="gridcell"] {
     min-width: 46px !important; min-height: 46px !important; line-height: 46px !important;
 }
 
 /* 按钮 */
 .stButton > button {
-    font-size: 30px !important; font-weight: bold !important; color: #FFD700 !important; background-color: #1a1a1a !important;
-    border: 3px solid #FFD700 !important; padding: 14px 44px !important; border-radius: 10px !important; min-height: 66px !important;
+    width: 100% !important;
+    font-size: 24px !important; font-weight: 900 !important; letter-spacing: 2px;
+    color: #090C10 !important; background: linear-gradient(90deg, #00E5FF 0%, #00B4D8 100%) !important;
+    border: none !important; border-radius: 8px !important; min-height: 60px !important;
+    box-shadow: 0 4px 15px rgba(0, 229, 255, 0.3) !important;
+    transition: all 0.2s ease !important;
 }
-.stButton > button:hover { background-color: #333 !important; color: #FFE55C !important; border-color: #FFE55C !important; }
+.stButton > button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 229, 255, 0.5) !important;
+}
 
-/* 正文与数据表 */
-[data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li { font-size: 18px !important; }
-[data-testid="stMetricValue"] { font-size: 30px !important; font-weight: 700 !important; }
-[data-testid="stMetricLabel"] { font-size: 16px !important; }
-[data-testid="stDataFrame"] * { font-size: 16px !important; }
+/* 复选框 */
+[data-testid="stCheckbox"] label {
+    color: #94A3B8 !important; font-size: 16px !important; font-weight: 600 !important;
+}
+
+/* 卡片面板 */
+.terminal-card {
+    background: #111820; border: 1px solid #1E293B; border-radius: 10px;
+    padding: 20px; margin-bottom: 20px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+.card-header {
+    font-size: 14px; color: #64748B; font-weight: 700; letter-spacing: 1px; margin-bottom: 12px;
+    text-transform: uppercase;
+}
+.stat-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+.stat-label { color: #94A3B8; font-size: 16px; }
+.stat-value { color: #E2E8F0; font-family: 'Courier New', Courier, monospace; font-size: 18px; font-weight: bold; }
+.highlight-up { color: #FF3366; font-weight: 900; } /* A股红涨 */
+.highlight-down { color: #00E676; font-weight: 900; } /* A股绿跌 */
+.highlight-gold { color: #FFD700; }
+
+/* 数据表 */
+[data-testid="stDataFrame"] {
+    background-color: #111820 !important; border-radius: 8px; border: 1px solid #1E293B;
+}
+[data-testid="stDataFrame"] * { font-size: 15px !important; color: #E2E8F0; }
+
+/* 折叠面板 */
+[data-testid="stExpander"] {
+    background: #111820 !important; border: 1px solid #1E293B !important; border-radius: 8px !important;
+}
+[data-testid="stExpander"] summary {
+    color: #00E5FF !important; font-weight: 700 !important; font-size: 18px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown(
     """
-    <div style="display:flex; align-items:baseline; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
-      <span style="font-size:2.0rem; font-weight:800;">📊 持仓对冲分析助手</span>
-      <span style="color:#e00000; font-size:1.05rem; font-weight:700;">纯分析 · 动态行业匹配 · 科学严谨 · 操作需手动执行</span>
+    <div class="terminal-header">
+      <span class="terminal-title">📊 QUANT-HEDGE TERMINAL</span>
+      <span class="terminal-subtitle">动态匹配 · 分层风险决策 · 智能终端</span>
     </div>
     """, unsafe_allow_html=True
 )
 
-# ============================================================
-# 【修复重点】重构布局：两行两列，不再互相影响
-# ============================================================
+# 两行两列布局
 row1_col1, row1_col2 = st.columns(2)
 code = row1_col1.text_input("股票代码", "")
 qty = row1_col2.number_input("数量（股）", value=None, step=100, placeholder="如 100")
@@ -603,16 +668,18 @@ row2_col1, row2_col2 = st.columns(2)
 buy_price = row2_col1.number_input("买入价", value=None, step=0.01, format="%.2f", placeholder="如 23.00")
 buy_date = row2_col2.date_input("买入日期", value=None)
 
-st.markdown("**账户权限（勾选后系统才会给出对应方案）**")
+st.markdown("<div style='margin-top: 15px; margin-bottom: 5px; color: #64748B; font-size: 14px; font-weight: 700;'>ACCOUNT PERMISSIONS</div>", unsafe_allow_html=True)
 c1, c2 = st.columns(2)
 has_margin = c1.checkbox("已开通两融账户（支持融券）")
 has_option = c2.checkbox("已开通ETF期权账户")
 
-if st.button("开始分析"):
+st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+
+if st.button("INITIALIZE ANALYSIS / 开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        with st.spinner("正在获取行业分类并测算最优ETF..."):
+        with st.spinner("系统运算中..."):
             try:
                 code = code.strip()
                 qty = int(qty)
@@ -653,40 +720,55 @@ if st.button("开始分析"):
                     market_value, qty, beta, code, name, best_etf, etf_price, is_industry_etf
                 )
 
-                st.subheader("【持仓与走势】")
-                st.write(f"**{name}（{code}）** | 现价 {price:.2f} | 成本 {buy_price:.2f} | {qty}股 | 市值 {market_value:.0f}元")
-                st.info(f"**所属行业**：{industry} | **趋势研判**：{trend['rating']}（得分 {trend['total']}） | **个股 Beta**：{beta:.2f}")
+                pnl = (price - buy_price) * qty
+                pnl_class = "highlight-up" if pnl >= 0 else "highlight-down"
+                pnl_sign = "+" if pnl >= 0 else ""
+
+                # 终端风的数据卡片
+                st.markdown(f"""
+                <div class="terminal-card">
+                    <div class="card-header">POSITION OVERVIEW / 持仓概览</div>
+                    <div style="font-size: 24px; font-weight: 800; color: #E2E8F0; margin-bottom: 15px;">
+                        {name} <span style="color: #64748B; font-size: 18px;">({code})</span>
+                    </div>
+                    <div class="stat-row"><span class="stat-label">现价</span><span class="stat-value">{price:.2f}</span></div>
+                    <div class="stat-row"><span class="stat-label">成本</span><span class="stat-value">{buy_price:.2f}</span></div>
+                    <div class="stat-row"><span class="stat-label">持仓数量</span><span class="stat-value">{qty} 股</span></div>
+                    <div class="stat-row"><span class="stat-label">总市值</span><span class="stat-value">{market_value:.0f} 元</span></div>
+                    <div class="stat-row"><span class="stat-label">浮动盈亏</span><span class="stat-value {pnl_class}">{pnl_sign}{pnl:.0f} 元</span></div>
+                    <div style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #1E293B;">
+                        <div class="stat-row"><span class="stat-label">所属行业</span><span class="stat-value">{industry}</span></div>
+                        <div class="stat-row"><span class="stat-label">趋势研判</span><span class="stat-value highlight-gold">{trend['rating']} ({trend['total']})</span></div>
+                        <div class="stat-row"><span class="stat-label">个股 Beta</span><span class="stat-value">{beta:.2f}</span></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
                 if is_industry_etf:
-                    st.subheader("【动态行业ETF匹配】")
-                    st.caption("系统已根据您输入股票的所属行业，自动匹配到对应的行业ETF：")
+                    st.markdown("<div class='card-header' style='margin-top:20px;'>INDUSTRY ETF MATCHING / 动态行业匹配</div>", unsafe_allow_html=True)
                     st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
                     if corr["r2"] is not None:
                         grade = r2_grade(corr["r2"])
                         if grade["label"] in ["强匹配", "中等匹配"]:
-                            st.success(f"匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 适合作为行业对冲工具。")
+                            st.success(f"✅ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 适合作为行业对冲工具。")
                         else:
-                            st.warning(f"匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 相关性偏低，行业对冲效果可能有限，请谨慎使用。")
+                            st.warning(f"⚠️ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 相关性偏低，行业对冲效果可能有限，请谨慎使用。")
                 else:
-                    st.subheader("【全量期权宽基优选】")
-                    st.caption("系统未能匹配到对应的行业ETF，已自动降级为宽基ETF优选：")
+                    st.markdown("<div class='card-header' style='margin-top:20px;'>BROAD-BASED ETF OPTIMIZATION / 宽基智能优选</div>", unsafe_allow_html=True)
                     st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
                     if corr["r2"] is not None:
-                        st.success(f"最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
+                        st.success(f"✅ 最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
 
                 if specific_actions:
-                    st.write("---")
-                    st.write(f"**针对最优匹配【{best_etf['name']}】的即时应答清单：**")
+                    st.markdown("<div class='card-header' style='margin-top:20px;'>EXECUTION COMMAND / 指令清单</div>", unsafe_allow_html=True)
                     for act in specific_actions:
                         if act.startswith("⚠️"):
                             st.warning(act)
                         else:
                             st.success(act)
-                    st.write("---")
 
-                st.subheader("【科学严谨·分层对冲方案】")
-                st.write("以下方案按**风险来源**分类，请根据您的实际约束（如是否保留底仓、能否承担利息）自行选择手动执行：")
-
+                st.markdown("<div class='card-header' style='margin-top:30px;'>STRATIFIED HEDGING PLANS / 分层对冲方案</div>", unsafe_allow_html=True)
+                
                 for plan in plans:
                     with st.expander(f"🔹 {plan['category']}：{plan['name']}", expanded=True):
                         st.markdown(f"**适用场景**：{plan['scenario']}")
@@ -703,8 +785,7 @@ if st.button("开始分析"):
                                 f"> 价格：{act['price']}"
                             )
 
-                st.subheader("【手动执行提示】")
-                st.warning("以上方案为纯分析参考，本工具不发送任何委托。请在券商 APP 中核对实时价格、券源、权利金后再手动下单。")
+                st.markdown("<br><div style='text-align: center; color: #64748B; font-size: 13px;'>本终端仅提供量化分析参考，不构成投资建议。请手动至券商APP核验并下单。</div>", unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"数据获取或计算失败：{e}")
+                st.error(f"终端错误：{e}")
