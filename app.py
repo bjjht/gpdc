@@ -74,7 +74,6 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
 
 @st.cache_data(ttl=1800)
 def fetch_stock_industry(code: str) -> str:
-    """获取股票所属行业，兼容不同接口的返回"""
     try:
         info = fetch_with_retry(ak.stock_individual_info_em, symbol=code)
         if info is not None and not info.empty:
@@ -86,7 +85,6 @@ def fetch_stock_industry(code: str) -> str:
         pass
     return "未知"
 
-# 各数据源ETF日线函数
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
     start, end = get_date_range(days)
     df = ak.fund_etf_hist_em(symbol=etf_code, period="daily", start_date=start, end_date=end, adjust="qfq")
@@ -224,35 +222,20 @@ INDUSTRY_KEYWORDS = {
 
 @st.cache_data(ttl=3600)
 def find_industry_etf(stock_name: str, industry_name: str):
-    """
-    稳健的行业ETF匹配：
-    1. 优先在行业名/股票名中查静态字典
-    2. 没查到，则拉取全市场ETF，用"行业名"做包含匹配
-    """
-    # 1. 静态字典
     for kw, etf in INDUSTRY_KEYWORDS.items():
         if kw in industry_name or kw in stock_name:
             return {"code": etf[0], "name": etf[1]}
-
-    # 2. 动态匹配
     if industry_name == "未知":
         return None
-        
     try:
         etf_df = ak.fund_etf_spot_em()
-        # 排除债券、货币等，不排除带数字的（如消费50）
         mask = ~etf_df["名称"].str.contains("债|货币|国债|短融|城投|转债")
         etf_df = etf_df[mask]
-        
-        # 尝试直接用行业名去匹配ETF名称（比如行业叫"半导体"，找名字里带"半导体"的ETF）
-        # 注意：有些行业名带罗马数字，如"证券Ⅱ"，我们要去掉后面的符号再匹配
         clean_industry = re.sub(r'[^\u4e00-\u9fa5]', '', industry_name) 
         if clean_industry:
             matched = etf_df[etf_df["名称"].str.contains(clean_industry)]
             if not matched.empty:
-                # 尽量选规模大或名字简短的，这里取第一个
                 return {"code": matched.iloc[0]["代码"], "name": matched.iloc[0]["名称"]}
-                
     except Exception:
         pass
     return None
@@ -339,6 +322,56 @@ def format_option_name(etf_prefix: str, opt_type: str, month: str, strike: float
     return f"{etf_prefix}{opt_type}{month}{int(round(strike * 1000))}"
 
 # ============================================================
+# 针对最优匹配的【具体执行清单】生成器
+# ============================================================
+
+def generate_specific_actions(best_etf, etf_price, rating, market_value, beta, is_industry_etf):
+    """
+    当选定最优ETF后，立刻给出具体的期权或融券执行清单。
+    如果规模不够，明确提示需要多少资金。
+    """
+    actions = []
+    etf_price_used = etf_price if etf_price else 4.0
+    contract_notional = etf_price_used * 10000
+    equiv = market_value * beta / contract_notional if contract_notional else 0
+    equiv_int = int(equiv)
+    
+    month = option_month_label()
+    interval = get_strike_interval(etf_price_used)
+    
+    # 1. 检查期权规模是否足够
+    if rating in ("震荡", "偏空", "中性偏空", "中性偏多"):
+        if equiv_int >= 1:
+            put_name = format_option_name(best_etf["name"], "沽", month, round_to_strike(etf_price_used*0.95, interval))
+            call_name = format_option_name(best_etf["name"], "购", month, round_to_strike(etf_price_used*1.05, interval))
+            
+            if rating == "震荡":
+                actions.append(f"👉 **期权执行（领口策略）**：买入 **{put_name} {equiv_int}张** + 卖出 **{call_name} {equiv_int}张**。")
+            elif rating in ("偏空", "中性偏空"):
+                actions.append(f"👉 **期权执行（保护性认沽）**：买入 **{put_name} {equiv_int}张**。")
+            elif rating == "中性偏多":
+                actions.append(f"👉 **期权执行（备兑开仓）**：卖出 **{call_name} {equiv_int}张**。")
+        else:
+            # 规模不够，计算买够1张需要多少钱
+            need_market_value = contract_notional / beta if beta > 0 else 0
+            gap = need_market_value - market_value
+            actions.append(
+                f"⚠️ **期权规模不足**：当前市值 {market_value:.0f} 元，等效仅 {equiv:.2f} 张。"
+                f"ETF期权最低交易单位为 1 张（对应 10000 份 ETF），"
+                f"若要买 1 张，持仓市值至少需要约 **{need_market_value:.0f} 元**（你还差约 {gap:.0f} 元）。"
+            )
+
+    # 2. 检查融券规模是否足够
+    if is_industry_etf:
+        # 行业ETF融券
+        etf_px = etf_price if etf_price else 1.0
+        raw_shares = market_value * 1.2 / etf_px
+        short_shares = max(100, int(raw_shares // 100) * 100)
+        actions.append(f"👉 **行业ETF融券**：融券卖出 **{short_shares} 份** {best_etf['name']}（{best_etf['code']}）。")
+    
+    return actions
+
+# ============================================================
 # 指标层与趋势引擎
 # ============================================================
 
@@ -414,7 +447,6 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
             "action": {"target": f"{stock_name}（{stock_code}）", "side": "融券卖出", "qty": short_qty, "price": "不低于最新成交价"}
         })
 
-    # 行业对冲方案：只要匹配到了行业ETF（无论是静态还是动态），就在这里展示
     if has_margin and is_industry_etf and rating in ("偏空", "中性偏空", "震荡"):
         etf_code = best_etf["code"]
         etf_name = best_etf["name"]
@@ -481,6 +513,17 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
                         "cost": "需持有对应ETF现货作担保。若大涨，上方利润封顶。",
                         "action": {"target": call_name, "side": "卖出认购", "qty": equiv_int, "price": "以券商APP为准"}
                     })
+        else:
+            # 期权规模不够
+            need_market_value = contract_notional / beta if beta > 0 else 0
+            plans.append({
+                "category": "系统性对冲（大盘风险）",
+                "name": f"⚠️ {best_etf['name']} 期权（规模不足）",
+                "scenario": f"当前持仓市值 {market_value:.0f} 元，等效 {equiv:.2f} 张",
+                "detail": f"ETF期权最低交易单位为 1 张。要买入 1 张，持仓市值至少需要约 **{need_market_value:.0f} 元**。",
+                "cost": "当前持仓太小，无法通过期权进行有效对冲。",
+                "action": None
+            })
 
     if not plans:
         plans.append({
@@ -560,17 +603,13 @@ if st.button("开始分析"):
                 beta = calc_beta(stock_df, index_df)
                 market_value = price * qty
 
-                # 1. 获取真实行业分类
                 industry = fetch_stock_industry(code)
-                
-                # 2. 匹配行业ETF（静态+动态）
                 matched_industry = find_industry_etf(name, industry)
                 is_industry_etf = False
                 
                 if matched_industry:
                     multi = fetch_etf_daily_multi(matched_industry["code"], days=90)
                     corr = calc_correlation_r2(stock_df, multi["best_df"], window=60)
-                    # 关键修复：只要匹配到行业ETF，无论R²多少，都展示！让用户自己看相关性决定用不用！
                     best_etf = matched_industry
                     etf_source = multi["best_source"]
                     compare_results = [{"ETF代码": best_etf["code"], "ETF名称": best_etf["name"], "R²": corr["r2"] if corr["r2"] else 0}]
@@ -578,13 +617,15 @@ if st.button("开始分析"):
                     etf_rt = fetch_etf_realtime(best_etf["code"])
                     etf_price = etf_rt.get("price")
                 
-                # 3. 如果完全没匹配到行业ETF，才降级到宽基
                 if not is_industry_etf:
                     best_etf, corr, etf_hist, etf_source, compare_results = select_best_broad_etf(code, stock_df, beta)
                     etf_rt = fetch_etf_realtime(best_etf["code"])
                     etf_price = etf_rt.get("price")
 
                 trend = run_trend_engine(stock_df, index_df)
+
+                # 获取具体执行清单
+                specific_actions = generate_specific_actions(best_etf, etf_price, trend["rating"], market_value, beta, is_industry_etf)
 
                 plans = generate_hedge_plans(
                     trend["rating"], corr, has_margin, has_option, 
@@ -611,6 +652,17 @@ if st.button("开始分析"):
                     st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
                     if corr["r2"] is not None:
                         st.success(f"最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
+
+                # 在这里展示具体执行清单
+                if specific_actions:
+                    st.write("---")
+                    st.write(f"**针对最优匹配【{best_etf['name']}】的即时应答清单：**")
+                    for act in specific_actions:
+                        if act.startswith("⚠️"):
+                            st.warning(act)
+                        else:
+                            st.success(act)
+                    st.write("---")
 
                 st.subheader("【科学严谨·分层对冲方案】")
                 st.write("以下方案按**风险来源**分类，请根据您的实际约束（如是否保留底仓、能否承担利息）自行选择手动执行：")
