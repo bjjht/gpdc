@@ -11,7 +11,7 @@ import concurrent.futures
 from requests.exceptions import ConnectionError, Timeout
 
 # ============================================================
-# 交易日判断
+# 交易日判断（周末/节假日自动回退）
 # ============================================================
 
 try:
@@ -326,10 +326,6 @@ def format_option_name(etf_prefix: str, opt_type: str, month: str, strike: float
 # ============================================================
 
 def generate_specific_actions(best_etf, etf_price, rating, market_value, beta, is_industry_etf):
-    """
-    当选定最优ETF后，立刻给出具体的期权或融券执行清单。
-    如果规模不够，明确提示需要多少资金。
-    """
     actions = []
     etf_price_used = etf_price if etf_price else 4.0
     contract_notional = etf_price_used * 10000
@@ -339,7 +335,6 @@ def generate_specific_actions(best_etf, etf_price, rating, market_value, beta, i
     month = option_month_label()
     interval = get_strike_interval(etf_price_used)
     
-    # 1. 检查期权规模是否足够
     if rating in ("震荡", "偏空", "中性偏空", "中性偏多"):
         if equiv_int >= 1:
             put_name = format_option_name(best_etf["name"], "沽", month, round_to_strike(etf_price_used*0.95, interval))
@@ -352,7 +347,6 @@ def generate_specific_actions(best_etf, etf_price, rating, market_value, beta, i
             elif rating == "中性偏多":
                 actions.append(f"👉 **期权执行（备兑开仓）**：卖出 **{call_name} {equiv_int}张**。")
         else:
-            # 规模不够，计算买够1张需要多少钱
             need_market_value = contract_notional / beta if beta > 0 else 0
             gap = need_market_value - market_value
             actions.append(
@@ -361,9 +355,7 @@ def generate_specific_actions(best_etf, etf_price, rating, market_value, beta, i
                 f"若要买 1 张，持仓市值至少需要约 **{need_market_value:.0f} 元**（你还差约 {gap:.0f} 元）。"
             )
 
-    # 2. 检查融券规模是否足够
     if is_industry_etf:
-        # 行业ETF融券
         etf_px = etf_price if etf_price else 1.0
         raw_shares = market_value * 1.2 / etf_px
         short_shares = max(100, int(raw_shares // 100) * 100)
@@ -514,7 +506,6 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
                         "action": {"target": call_name, "side": "卖出认购", "qty": equiv_int, "price": "以券商APP为准"}
                     })
         else:
-            # 期权规模不够
             need_market_value = contract_notional / beta if beta > 0 else 0
             plans.append({
                 "category": "系统性对冲（大盘风险）",
@@ -543,21 +534,47 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
 
 st.set_page_config(page_title="对冲分析助手", layout="centered")
 
+# ============================================================
+# 【修复重点】强制放大日期框及日历内部所有元素
+# ============================================================
 st.markdown("""
 <style>
 [data-testid="stStatusWidget"], [data-testid="stAppRunningMan"], [class*="RunningMan"] { display: none !important; }
 #MainMenu { visibility: hidden !important; }
+
+/* 所有输入框的标签 */
 [data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stDateInput"] label {
     font-size: 24px !important; font-weight: 800 !important; color: #111 !important; margin-bottom: 4px !important;
 }
-[data-testid="stTextInput"] input, [data-testid="stNumberInput"] input, [data-testid="stDateInput"] input {
+
+/* 所有输入框的实体（包括日期框内部的 input 和 div） */
+[data-testid="stTextInput"] input, [data-testid="stNumberInput"] input {
     font-size: 24px !important; font-weight: 600 !important; min-height: 54px !important;
 }
+[data-testid="stDateInput"] input, 
+[data-testid="stDateInput"] div, 
+[data-testid="stDateInput"] span,
+[data-testid="stDateInput"] button {
+    font-size: 24px !important; font-weight: 600 !important; min-height: 54px !important;
+}
+
+/* 日期选择器弹出日历：强制放大里面的所有文字 */
+[data-testid="stDateInputCalendar"] *, [data-baseweb="calendar"] * {
+    font-size: 22px !important; font-weight: 700 !important;
+}
+[data-testid="stDateInputCalendar"] [role="gridcell"], 
+[data-baseweb="calendar"] [role="gridcell"] {
+    min-width: 46px !important; min-height: 46px !important; line-height: 46px !important;
+}
+
+/* 按钮 */
 .stButton > button {
     font-size: 30px !important; font-weight: bold !important; color: #FFD700 !important; background-color: #1a1a1a !important;
     border: 3px solid #FFD700 !important; padding: 14px 44px !important; border-radius: 10px !important; min-height: 66px !important;
 }
 .stButton > button:hover { background-color: #333 !important; color: #FFE55C !important; border-color: #FFE55C !important; }
+
+/* 正文与数据表 */
 [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li { font-size: 18px !important; }
 [data-testid="stMetricValue"] { font-size: 30px !important; font-weight: 700 !important; }
 [data-testid="stMetricLabel"] { font-size: 16px !important; }
@@ -623,8 +640,6 @@ if st.button("开始分析"):
                     etf_price = etf_rt.get("price")
 
                 trend = run_trend_engine(stock_df, index_df)
-
-                # 获取具体执行清单
                 specific_actions = generate_specific_actions(best_etf, etf_price, trend["rating"], market_value, beta, is_industry_etf)
 
                 plans = generate_hedge_plans(
@@ -653,7 +668,6 @@ if st.button("开始分析"):
                     if corr["r2"] is not None:
                         st.success(f"最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
 
-                # 在这里展示具体执行清单
                 if specific_actions:
                     st.write("---")
                     st.write(f"**针对最优匹配【{best_etf['name']}】的即时应答清单：**")
