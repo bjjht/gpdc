@@ -529,10 +529,10 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (暗黑金融终端风)
+# 主界面 (暗黑金融终端风 - 全面优化白底问题)
 # ============================================================
 
-st.set_page_config(page_title="量化对冲终端", layout="centered")
+st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
 
 # 深度定制 CSS
 st.markdown("""
@@ -559,11 +559,11 @@ header { visibility: hidden !important; }
     padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1);
 }
 .terminal-title {
-    font-size: 2.2rem; font-weight: 900; color: #00E5FF; letter-spacing: 1px;
+    font-size: 2.0rem; font-weight: 900; color: #00E5FF; letter-spacing: 1px;
     text-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
 }
 .terminal-subtitle {
-    color: #FF3366; font-size: 1rem; font-weight: 600; letter-spacing: 0.5px;
+    color: #FF3366; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.5px;
 }
 
 /* 输入框标签 */
@@ -572,31 +572,56 @@ header { visibility: hidden !important; }
     letter-spacing: 0.5px;
 }
 
-/* 输入框内部 */
+/* 彻底解决输入框内部的白底问题 (Text, Number, Date) */
+[data-baseweb="input"], [data-baseweb="base-input"] {
+    background-color: #1A2332 !important;
+    border: 1px solid #2D3748 !important;
+    border-radius: 6px !important;
+}
 [data-testid="stTextInput"] input, 
 [data-testid="stNumberInput"] input, 
 [data-testid="stDateInput"] input {
-    background-color: #1A2332 !important; color: #00E5FF !important;
-    border: 1px solid #2D3748 !important; border-radius: 6px !important;
+    background-color: transparent !important; 
+    color: #00E5FF !important;
     font-family: 'Courier New', Courier, monospace !important; font-weight: 700 !important;
     font-size: 22px !important; min-height: 54px !important;
     padding: 10px 14px !important;
-    transition: all 0.3s ease;
 }
 [data-testid="stTextInput"] input:focus, 
 [data-testid="stNumberInput"] input:focus, 
 [data-testid="stDateInput"] input:focus {
     border-color: #00E5FF !important; box-shadow: 0 0 8px rgba(0, 229, 255, 0.2) !important;
 }
-[data-testid="stDateInput"] svg { width: 24px !important; height: 24px !important; fill: #00E5FF; }
+[data-testid="stDateInput"] svg { width: 24px !important; height: 24px !important; fill: #00E5FF; color: #00E5FF; }
 
-/* 日期弹窗 */
-[data-testid="stDateInputCalendar"] *, [data-baseweb="calendar"] * {
-    font-size: 22px !important; font-weight: 700 !important;
+/* 解决数字输入框的 + - 按钮白底问题 */
+[data-testid="stNumberInputStepUp"],
+[data-testid="stNumberInputStepDown"] {
+    background-color: transparent !important;
+    color: #00E5FF !important;
+    border-left: 1px solid #2D3748 !important;
 }
-[data-testid="stDateInputCalendar"] [role="gridcell"], [data-baseweb="calendar"] [role="gridcell"] {
-    min-width: 46px !important; min-height: 46px !important; line-height: 46px !important;
+[data-testid="stNumberInputStepUp"]:hover,
+[data-testid="stNumberInputStepDown"]:hover {
+    background-color: rgba(0,229,255,0.1) !important;
 }
+[data-testid="stNumberInput"] button {
+    background-color: transparent !important; color: #94A3B8 !important; border: none !important;
+}
+[data-testid="stNumberInput"] button:hover { color: #00E5FF !important; }
+
+/* 日期弹窗全面暗黑化 */
+[data-testid="stDateInputCalendar"] {
+    background-color: #1A2332 !important;
+    color: #E2E8F0 !important;
+    border: 1px solid #2D3748 !important;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.5) !important;
+}
+[data-testid="stDateInputCalendar"] * { color: #E2E8F0 !important; font-size: 20px !important; font-weight: 600 !important; }
+[data-testid="stDateInputCalendar"] [role="gridcell"] { min-width: 46px !important; min-height: 46px !important; }
+[data-testid="stDateInputCalendar"] [role="gridcell"]:hover { background-color: rgba(0,229,255,0.2) !important; border-radius: 4px; }
+[data-testid="stDateInputCalendar"] [aria-selected="true"] { background-color: #00E5FF !important; color: #000 !important; border-radius: 4px; }
+[data-testid="stDateInputCalendar"] [aria-selected="true"] * { color: #000 !important; }
 
 /* 按钮 */
 .stButton > button {
@@ -625,7 +650,6 @@ header { visibility: hidden !important; }
 }
 .card-header {
     font-size: 14px; color: #64748B; font-weight: 700; letter-spacing: 1px; margin-bottom: 12px;
-    text-transform: uppercase;
 }
 .stat-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
 .stat-label { color: #94A3B8; font-size: 16px; }
@@ -653,8 +677,8 @@ header { visibility: hidden !important; }
 st.markdown(
     """
     <div class="terminal-header">
-      <span class="terminal-title">📊 QUANT-HEDGE TERMINAL</span>
-      <span class="terminal-subtitle">动态匹配 · 分层风险决策 · 智能终端</span>
+      <span class="terminal-title">📊 持仓对冲分析终端</span>
+      <span class="terminal-subtitle">动态匹配 · 分层风险决策 · 专业量化辅助</span>
     </div>
     """, unsafe_allow_html=True
 )
@@ -668,14 +692,14 @@ row2_col1, row2_col2 = st.columns(2)
 buy_price = row2_col1.number_input("买入价", value=None, step=0.01, format="%.2f", placeholder="如 23.00")
 buy_date = row2_col2.date_input("买入日期", value=None)
 
-st.markdown("<div style='margin-top: 15px; margin-bottom: 5px; color: #64748B; font-size: 14px; font-weight: 700;'>ACCOUNT PERMISSIONS</div>", unsafe_allow_html=True)
+st.markdown("<div style='margin-top: 15px; margin-bottom: 5px; color: #64748B; font-size: 14px; font-weight: 700;'>账户权限</div>", unsafe_allow_html=True)
 c1, c2 = st.columns(2)
 has_margin = c1.checkbox("已开通两融账户（支持融券）")
 has_option = c2.checkbox("已开通ETF期权账户")
 
 st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
-if st.button("INITIALIZE ANALYSIS / 开始分析"):
+if st.button("🚀 开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
@@ -727,7 +751,7 @@ if st.button("INITIALIZE ANALYSIS / 开始分析"):
                 # 终端风的数据卡片
                 st.markdown(f"""
                 <div class="terminal-card">
-                    <div class="card-header">POSITION OVERVIEW / 持仓概览</div>
+                    <div class="card-header">持仓概览</div>
                     <div style="font-size: 24px; font-weight: 800; color: #E2E8F0; margin-bottom: 15px;">
                         {name} <span style="color: #64748B; font-size: 18px;">({code})</span>
                     </div>
@@ -745,7 +769,7 @@ if st.button("INITIALIZE ANALYSIS / 开始分析"):
                 """, unsafe_allow_html=True)
 
                 if is_industry_etf:
-                    st.markdown("<div class='card-header' style='margin-top:20px;'>INDUSTRY ETF MATCHING / 动态行业匹配</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='card-header' style='margin-top:20px;'>动态行业 ETF 匹配</div>", unsafe_allow_html=True)
                     st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
                     if corr["r2"] is not None:
                         grade = r2_grade(corr["r2"])
@@ -754,20 +778,20 @@ if st.button("INITIALIZE ANALYSIS / 开始分析"):
                         else:
                             st.warning(f"⚠️ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 相关性偏低，行业对冲效果可能有限，请谨慎使用。")
                 else:
-                    st.markdown("<div class='card-header' style='margin-top:20px;'>BROAD-BASED ETF OPTIMIZATION / 宽基智能优选</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='card-header' style='margin-top:20px;'>宽基 ETF 智能优选</div>", unsafe_allow_html=True)
                     st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
                     if corr["r2"] is not None:
                         st.success(f"✅ 最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
 
                 if specific_actions:
-                    st.markdown("<div class='card-header' style='margin-top:20px;'>EXECUTION COMMAND / 指令清单</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='card-header' style='margin-top:20px;'>执行指令清单</div>", unsafe_allow_html=True)
                     for act in specific_actions:
                         if act.startswith("⚠️"):
                             st.warning(act)
                         else:
                             st.success(act)
 
-                st.markdown("<div class='card-header' style='margin-top:30px;'>STRATIFIED HEDGING PLANS / 分层对冲方案</div>", unsafe_allow_html=True)
+                st.markdown("<div class='card-header' style='margin-top:30px;'>分层对冲方案</div>", unsafe_allow_html=True)
                 
                 for plan in plans:
                     with st.expander(f"🔹 {plan['category']}：{plan['name']}", expanded=True):
