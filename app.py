@@ -204,7 +204,7 @@ def fetch_etf_realtime(etf_code: str) -> dict:
     except Exception: return {}
 
 # ============================================================
-# 稳健的行业ETF匹配（静态+动态包含匹配）
+# 稳健的行业ETF匹配
 # ============================================================
 
 INDUSTRY_KEYWORDS = {
@@ -241,7 +241,7 @@ def find_industry_etf(stock_name: str, industry_name: str):
     return None
 
 # ============================================================
-# 宽基ETF智能优选（作为备选）
+# 宽基ETF智能优选
 # ============================================================
 
 BROAD_ETF_POOL = [
@@ -535,30 +535,31 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
 st.set_page_config(page_title="对冲分析助手", layout="centered")
 
 # ============================================================
-# 【修复重点】强制放大日期框及日历内部所有元素
+# 【修复重点】强制放大日期框，但不再撑坏内部布局
 # ============================================================
 st.markdown("""
 <style>
 [data-testid="stStatusWidget"], [data-testid="stAppRunningMan"], [class*="RunningMan"] { display: none !important; }
 #MainMenu { visibility: hidden !important; }
 
-/* 所有输入框的标签 */
+/* 统一所有输入框标签 */
 [data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stDateInput"] label {
     font-size: 24px !important; font-weight: 800 !important; color: #111 !important; margin-bottom: 4px !important;
 }
 
-/* 所有输入框的实体（包括日期框内部的 input 和 div） */
-[data-testid="stTextInput"] input, [data-testid="stNumberInput"] input {
-    font-size: 24px !important; font-weight: 600 !important; min-height: 54px !important;
-}
-[data-testid="stDateInput"] input, 
-[data-testid="stDateInput"] div, 
-[data-testid="stDateInput"] span,
-[data-testid="stDateInput"] button {
+/* 统一输入框内部文本大小（只针对 input，不破坏 div 结构） */
+[data-testid="stTextInput"] input, 
+[data-testid="stNumberInput"] input, 
+[data-testid="stDateInput"] input {
     font-size: 24px !important; font-weight: 600 !important; min-height: 54px !important;
 }
 
-/* 日期选择器弹出日历：强制放大里面的所有文字 */
+/* 放大日期选择器右侧的日历图标 */
+[data-testid="stDateInput"] svg {
+    width: 24px !important; height: 24px !important;
+}
+
+/* 日期弹窗内部放大 */
 [data-testid="stDateInputCalendar"] *, [data-baseweb="calendar"] * {
     font-size: 22px !important; font-weight: 700 !important;
 }
@@ -591,11 +592,16 @@ st.markdown(
     """, unsafe_allow_html=True
 )
 
-col1, col2 = st.columns(2)
-code = col1.text_input("股票代码", "")
-buy_price = col1.number_input("买入价", value=None, step=0.01, format="%.2f", placeholder="如 23.00")
-qty = col2.number_input("数量（股）", value=None, step=100, placeholder="如 100")
-buy_date = col2.date_input("买入日期", value=None)
+# ============================================================
+# 【修复重点】重构布局：两行两列，不再互相影响
+# ============================================================
+row1_col1, row1_col2 = st.columns(2)
+code = row1_col1.text_input("股票代码", "")
+qty = row1_col2.number_input("数量（股）", value=None, step=100, placeholder="如 100")
+
+row2_col1, row2_col2 = st.columns(2)
+buy_price = row2_col1.number_input("买入价", value=None, step=0.01, format="%.2f", placeholder="如 23.00")
+buy_date = row2_col2.date_input("买入日期", value=None)
 
 st.markdown("**账户权限（勾选后系统才会给出对应方案）**")
 c1, c2 = st.columns(2)
