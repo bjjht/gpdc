@@ -529,7 +529,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (暗黑金融终端风 - 彻底重构日期输入)
+# 主界面 (暗黑金融终端风 - 彻底统一输入框)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
@@ -583,55 +583,55 @@ header { visibility: hidden !important; }
     color: #FF3366; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.5px;
 }
 
-/* 所有输入框标签 */
-[data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stSelectbox"] label {
-    font-size: 18px !important; font-weight: 600 !important; color: #94A3B8 !important; margin-bottom: 4px !important;
+/* ============================================================
+   暴力统一所有输入框样式（股票、数量、价格、日期）
+   ============================================================ */
+[data-testid="stTextInput"] label, 
+[data-testid="stNumberInput"] label {
+    font-size: 18px !important; 
+    font-weight: 600 !important; 
+    color: #94A3B8 !important; 
+    margin-bottom: 4px !important;
 }
 
-/* 文本和数字输入框 */
+/* 外层容器 */
 [data-baseweb="input"], [data-baseweb="base-input"] {
     background-color: #1A2332 !important;
     border: 1px solid #2D3748 !important;
     border-radius: 6px !important;
+    box-shadow: none !important;
 }
+
+/* 内部输入字 */
 [data-testid="stTextInput"] input, 
 [data-testid="stNumberInput"] input {
     background-color: transparent !important; 
     color: #00E5FF !important;
-    font-family: 'Courier New', Courier, monospace !important; font-weight: 700 !important;
-    font-size: 22px !important; min-height: 54px !important;
-    padding: 10px 14px !important;
-}
-
-/* 下拉框 (Selectbox) */
-[data-baseweb="select"] > div {
-    background-color: #1A2332 !important;
-    border: 1px solid #2D3748 !important;
-    border-radius: 6px !important;
-    color: #00E5FF !important;
-    font-size: 22px !important; 
     font-family: 'Courier New', Courier, monospace !important; 
     font-weight: 700 !important;
+    font-size: 22px !important; 
     min-height: 54px !important;
-}
-[data-baseweb="select"] * {
-    color: #00E5FF !important;
-}
-/* 下拉选项列表 */
-[data-baseweb="popover"] ul {
-    background-color: #1A2332 !important;
-    border: 1px solid #2D3748 !important;
-}
-[data-baseweb="popover"] li {
-    color: #E2E8F0 !important;
-    font-size: 18px !important;
-}
-[data-baseweb="popover"] li:hover {
-    background-color: #00E5FF !important;
-    color: #090C10 !important;
+    padding: 10px 14px !important;
+    border: none !important;
 }
 
-/* 折叠面板 (Expander)：彻底解决白底白字 */
+/* 数字加减按钮区域 */
+[data-testid="stNumberInputStepUp"], 
+[data-testid="stNumberInputStepDown"] {
+    background-color: transparent !important; 
+    color: #00E5FF !important; 
+    border-left: 1px solid #2D3748 !important;
+}
+[data-testid="stNumberInput"] button { 
+    background-color: transparent !important; 
+    color: #94A3B8 !important; 
+    border: none !important; 
+}
+[data-testid="stNumberInput"] button:hover { 
+    color: #00E5FF !important; 
+}
+
+/* 折叠面板 (Expander) */
 [data-testid="stExpander"] {
     background-color: #111820 !important; 
     border: 1px solid #1E293B !important; 
@@ -712,23 +712,22 @@ row2_col1, row2_col2 = st.columns(2)
 buy_price = row2_col1.number_input("买入价", value=None, step=0.01, format="%.2f", placeholder="如 23.00")
 
 with row2_col2:
+    # 使用三个并排的纯文本输入框代替下拉框和日历，彻底统一风格
     st.markdown("<label style='font-size:18px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>买入日期 (年 / 月 / 日)</label>", unsafe_allow_html=True)
-    # 彻底抛弃 st.date_input，用三个下拉框完美替代，绝对没有白底！
     c_y, c_m, c_d = st.columns([1.5, 1, 1])
-    curr_year = datetime.today().year
-    years = list(range(curr_year - 5, curr_year + 2))
-    months = list(range(1, 13))
-    days = list(range(1, 32))
+    curr_y = str(datetime.today().year)
+    curr_m = str(datetime.today().month)
+    curr_d = str(datetime.today().day)
     
-    sel_y = c_y.selectbox("年", years, index=years.index(curr_year), label_visibility="collapsed")
-    sel_m = c_m.selectbox("月", months, index=datetime.today().month - 1, label_visibility="collapsed")
-    sel_d = c_d.selectbox("日", days, index=datetime.today().day - 1, label_visibility="collapsed")
+    inp_y = c_y.text_input("年", value=curr_y, label_visibility="collapsed")
+    inp_m = c_m.text_input("月", value=curr_m, label_visibility="collapsed")
+    inp_d = c_d.text_input("日", value=curr_d, label_visibility="collapsed")
     
+    # 容错解析，防止用户乱输导致崩溃
     try:
-        buy_date = date(sel_y, sel_m, sel_d)
+        buy_date = date(int(inp_y), int(inp_m), int(inp_d))
     except ValueError:
-        buy_date = date(sel_y, sel_m, 28)
-
+        buy_date = date.today()
 
 st.markdown("<div style='margin-top: 15px; margin-bottom: 5px; color: #64748B; font-size: 14px; font-weight: 700;'>账户权限</div>", unsafe_allow_html=True)
 c1, c2 = st.columns(2)
@@ -741,7 +740,6 @@ if st.button("🚀 开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        # 用自定义的占位符替代 st.spinner
         status_placeholder = st.empty()
         status_placeholder.info("⏳ 正在并发请求数据并计算，请稍候...")
         
