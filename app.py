@@ -9,6 +9,7 @@ import re
 import requests
 import concurrent.futures
 from requests.exceptions import ConnectionError, Timeout
+import streamlit.components.v1 as components
 
 # ============================================================
 # 交易日判断（周末/节假日自动回退）
@@ -529,185 +530,78 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (终极对齐 + 金色大字 + 微信一键复制)
+# 主界面 (终极对齐 + 原生分享)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
 
 st.markdown("""
 <style>
-/* 暴力隐藏所有 Streamlit 运行时的悬浮状态框 */
-div[data-testid="stStatusWidget"],
-div[data-testid="stAppRunningMan"],
-div[data-testid="stConnectionStatus"],
-div[class*="StatusWidget"],
-div[class*="stStatusWidget"],
-div[class*="RunningMan"],
-div[class*="stSpinner"],
-#portal {
-    display: none !important;
-    visibility: hidden !important;
-    opacity: 0 !important;
-    position: absolute !important;
-    top: -9999px !important;
-    left: -9999px !important;
-    width: 0 !important;
-    height: 0 !important;
-    z-index: -9999 !important;
+/* 隐藏 Streamlit 默认元素 */
+div[data-testid="stStatusWidget"], div[data-testid="stAppRunningMan"], div[class*="StatusWidget"], div[class*="RunningMan"], div[class*="stSpinner"], #portal {
+    display: none !important; visibility: hidden !important; opacity: 0 !important; position: absolute !important; top: -9999px !important; left: -9999px !important; width: 0 !important; height: 0 !important; z-index: -9999 !important;
 }
-
 #MainMenu { visibility: hidden !important; }
 header { visibility: hidden !important; }
 
-/* 全局背景和字体 */
+/* 全局 */
 .stApp {
     background: linear-gradient(135deg, #090C10 0%, #111820 100%);
     color: #E2E8F0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
-[data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li {
-    color: #E2E8F0;
-    font-size: 18px !important;
-}
+[data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li { color: #E2E8F0; font-size: 18px !important; }
 
-/* 标题区 */
+/* 标题 */
 .terminal-header {
-    display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;
-    padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1);
 }
-.terminal-title {
-    font-size: 2.2rem; font-weight: 900; color: #00E5FF; letter-spacing: 1px;
-    text-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
-}
-.terminal-subtitle {
-    color: #FF3366; font-size: 1.05rem; font-weight: 600; letter-spacing: 0.5px;
-}
+.terminal-title { font-size: 2.2rem; font-weight: 900; color: #00E5FF; letter-spacing: 1px; text-shadow: 0 0 10px rgba(0, 229, 255, 0.3); }
+.terminal-subtitle { color: #FF3366; font-size: 1.05rem; font-weight: 600; letter-spacing: 0.5px; }
 
-/* 金色加大版块标题 */
+/* 金色标题 */
 .card-header-gold {
-    font-size: 24px !important; 
-    color: #FFD700 !important; 
-    font-weight: 900 !important; 
-    letter-spacing: 1px; 
-    margin-top: 30px;
-    margin-bottom: 15px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid rgba(255, 215, 0, 0.3);
-    text-shadow: 0 0 8px rgba(255, 215, 0, 0.3);
+    font-size: 24px !important; color: #FFD700 !important; font-weight: 900 !important; letter-spacing: 1px; 
+    margin-top: 30px; margin-bottom: 15px; padding-bottom: 8px; border-bottom: 1px solid rgba(255, 215, 0, 0.3); text-shadow: 0 0 8px rgba(255, 215, 0, 0.3);
 }
+.card-header { font-size: 18px; color: #64748B; font-weight: 700; letter-spacing: 1px; margin-bottom: 12px; }
 
-/* 普通标题 */
-.card-header {
-    font-size: 18px; color: #64748B; font-weight: 700; letter-spacing: 1px; margin-bottom: 12px;
-}
-
-/* 输入框外框与文字完全统一 */
-[data-testid="stTextInput"] label {
-    font-size: 18px !important; 
-    font-weight: 600 !important; 
-    color: #94A3B8 !important; 
-    margin-bottom: 4px !important;
-}
-div[data-baseweb="base-input"], 
-div[data-baseweb="input"],
-div[data-baseweb="input"] > div {
-    background-color: #1A2332 !important;
-    border: 1px solid #2D3748 !important;
-    border-radius: 6px !important;
-    box-shadow: none !important;
+/* 输入框统一 */
+[data-testid="stTextInput"] label { font-size: 18px !important; font-weight: 600 !important; color: #94A3B8 !important; margin-bottom: 4px !important; }
+div[data-baseweb="base-input"], div[data-baseweb="input"], div[data-baseweb="input"] > div {
+    background-color: #1A2332 !important; border: 1px solid #2D3748 !important; border-radius: 6px !important; box-shadow: none !important;
 }
 div[data-testid="stTextInput"] input {
-    color: #00E5FF !important;
-    -webkit-text-fill-color: #00E5FF !important;
-    font-family: 'Courier New', Courier, monospace !important; 
-    font-weight: 700 !important;
-    font-size: 22px !important; 
-    min-height: 54px !important;
-    padding: 10px 14px !important;
-    border: none !important;
+    color: #00E5FF !important; -webkit-text-fill-color: #00E5FF !important; font-family: 'Courier New', Courier, monospace !important; 
+    font-weight: 700 !important; font-size: 22px !important; min-height: 54px !important; padding: 10px 14px !important; border: none !important;
 }
 div[data-testid="stTextInput"] input::placeholder {
-    color: #64748B !important;
-    -webkit-text-fill-color: #64748B !important;
-    opacity: 1 !important;
-    font-size: 20px !important;
-    font-weight: 600 !important;
+    color: #64748B !important; -webkit-text-fill-color: #64748B !important; opacity: 1 !important; font-size: 20px !important; font-weight: 600 !important;
 }
 
-/* 折叠面板 (Expander) 字体加大 */
-[data-testid="stExpander"] {
-    background-color: #111820 !important; 
-    border: 1px solid #1E293B !important; 
-    border-radius: 8px !important;
-    box-shadow: none !important;
-    margin-bottom: 15px !important;
-}
-[data-testid="stExpander"] details,
-[data-testid="stExpander"] summary {
-    background-color: transparent !important;
-    color: #00E5FF !important; 
-    font-weight: 800 !important; 
-    font-size: 20px !important; 
-}
-[data-testid="stExpander"] summary:hover {
-    color: #00B4D8 !important;
-}
-[data-testid="stExpander"] .stMarkdown p {
-    color: #E2E8F0 !important;
-    font-size: 18px !important;
-}
+/* 折叠面板 */
+[data-testid="stExpander"] { background-color: #111820 !important; border: 1px solid #1E293B !important; border-radius: 8px !important; box-shadow: none !important; margin-bottom: 15px !important; }
+[data-testid="stExpander"] details, [data-testid="stExpander"] summary { background-color: transparent !important; color: #00E5FF !important; font-weight: 800 !important; font-size: 20px !important; }
+[data-testid="stExpander"] summary:hover { color: #00B4D8 !important; }
+[data-testid="stExpander"] .stMarkdown p { color: #E2E8F0 !important; font-size: 18px !important; }
 
-/* 提示框文字加大 */
-[data-testid="stNotification"] {
-    border-radius: 8px !important;
-}
-[data-testid="stNotification"] p {
-    font-size: 18px !important;
-    font-weight: 600 !important;
-}
+/* 提示框 */
+[data-testid="stNotification"] { border-radius: 8px !important; }
+[data-testid="stNotification"] p { font-size: 18px !important; font-weight: 600 !important; }
 
 /* 按钮 */
 .stButton > button {
-    width: 100% !important;
-    font-size: 24px !important; font-weight: 900 !important; letter-spacing: 2px;
+    width: 100% !important; font-size: 24px !important; font-weight: 900 !important; letter-spacing: 2px;
     color: #090C10 !important; background: linear-gradient(90deg, #00E5FF 0%, #00B4D8 100%) !important;
-    border: none !important; border-radius: 8px !important; min-height: 60px !important;
-    box-shadow: 0 4px 15px rgba(0, 229, 255, 0.3) !important;
-    transition: all 0.2s ease !important;
+    border: none !important; border-radius: 8px !important; min-height: 60px !important; box-shadow: 0 4px 15px rgba(0, 229, 255, 0.3) !important; transition: all 0.2s ease !important;
 }
-.stButton > button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(0, 229, 255, 0.5) !important;
-}
-
-/* 微信复制区域的代码块样式覆盖 */
-.stCode {
-    background-color: #1A2332 !important;
-    border: 1px solid #2D3748 !important;
-    border-radius: 8px !important;
-}
-.stCode code {
-    color: #E2E8F0 !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-    font-size: 16px !important;
-    line-height: 1.6 !important;
-}
-/* 代码块自带的复制按钮 */
-.stCode button {
-    color: #00E5FF !important;
-    background-color: transparent !important;
-}
+.stButton > button:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0, 229, 255, 0.5) !important; }
 
 /* 复选框 */
-[data-testid="stCheckbox"] label {
-    color: #94A3B8 !important; font-size: 16px !important; font-weight: 600 !important;
-}
+[data-testid="stCheckbox"] label { color: #94A3B8 !important; font-size: 16px !important; font-weight: 600 !important; }
 
-/* 卡片面板 */
-.terminal-card {
-    background: #111820; border: 1px solid #1E293B; border-radius: 10px;
-    padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-}
+/* 卡片 */
+.terminal-card { background: #111820; border: 1px solid #1E293B; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
 .stat-row { display: flex; justify-content: space-between; margin-bottom: 10px; }
 .stat-label { color: #94A3B8; font-size: 18px; }
 .stat-value { color: #E2E8F0; font-family: 'Courier New', Courier, monospace; font-size: 20px; font-weight: bold; }
@@ -716,10 +610,13 @@ div[data-testid="stTextInput"] input::placeholder {
 .highlight-gold { color: #FFD700; }
 
 /* 数据表 */
-[data-testid="stDataFrame"] {
-    background-color: #111820 !important; border-radius: 8px; border: 1px solid #1E293B;
-}
+[data-testid="stDataFrame"] { background-color: #111820 !important; border-radius: 8px; border: 1px solid #1E293B; }
 [data-testid="stDataFrame"] * { font-size: 16px !important; color: #E2E8F0; }
+
+/* 自定义分享按钮容器 */
+div[data-testid="stCustomComponentV1"] iframe {
+    border: none !important; width: 100% !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -838,16 +735,12 @@ if st.button("🚀 开始分析"):
             </div>
             """, unsafe_allow_html=True)
 
-            # ============================================================
-            # 生成用于微信复制的纯文本（去掉过多 Markdown，方便手机阅读）
-            # ============================================================
-            wx_text = f"【{name}（{code}）对冲分析报告】\n"
-            wx_text += f"--------------------------------\n"
+            # 生成用于分享的纯文本（带 Emoji 优化阅读）
+            wx_text = f"【{name}（{code}）量化对冲报告】\n"
             wx_text += f"📊 持仓信息\n"
-            wx_text += f"现价：{price:.2f} | 成本：{buy_price:.2f}\n"
-            wx_text += f"数量：{qty} 股 | 总市值：{market_value:.0f} 元\n"
-            wx_text += f"浮动盈亏：{pnl_sign}{pnl:.0f} 元\n"
-            wx_text += f"所属行业：{industry} | 趋势研判：{trend['rating']} ({trend['total']}) | Beta：{beta:.2f}\n\n"
+            wx_text += f"现价：{price:.2f} | 成本：{buy_price:.2f} | 数量：{qty}股\n"
+            wx_text += f"总市值：{market_value:.0f}元 | 盈亏：{pnl_sign}{pnl:.0f}元\n"
+            wx_text += f"所属行业：{industry} | 趋势：{trend['rating']} | Beta：{beta:.2f}\n\n"
 
             if is_industry_etf:
                 st.markdown("<div class='card-header-gold'>动态行业 ETF 匹配</div>", unsafe_allow_html=True)
@@ -871,7 +764,6 @@ if st.button("🚀 开始分析"):
                 for act in specific_actions:
                     clean_act = act.replace("👉 **", "").replace("**：", "：").replace("**", "").replace("⚠️ ", "")
                     wx_text += f"{clean_act}\n"
-                    
                     if act.startswith("⚠️"):
                         st.warning(act)
                     else:
@@ -887,7 +779,6 @@ if st.button("🚀 开始分析"):
                     st.info(f"**操作建议**：{plan['detail']}")
                     st.warning(f"**成本与代价**：{plan['cost']}")
                     
-                    wx_text += f"--------------------------------\n"
                     wx_text += f"【{plan['category']}：{plan['name']}】\n"
                     wx_text += f"场景：{plan['scenario']}\n"
                     wx_text += f"建议：{plan['detail']}\n"
@@ -902,17 +793,70 @@ if st.button("🚀 开始分析"):
                             f"> 数量：**{act['qty']}**\n"
                             f"> 价格：{act['price']}"
                         )
-                        wx_text += f"执行：标的 {act['target']} | 方向 {act['side']} | 数量 {act['qty']} | 价格 {act['price']}\n"
+                        wx_text += f"执行：{act['target']} | {act['side']} | {act['qty']} | {act['price']}\n"
+                    wx_text += "\n"
             
-            wx_text += "\n(本报告由量化终端生成，仅供参考，不构成投资建议)"
+            wx_text += "(本报告由量化终端生成，仅供参考)"
 
             # ============================================================
-            # 渲染微信一键复制区域
+            # 原生 Web Share API 分享按钮
             # ============================================================
-            st.markdown("<div class='card-header-gold' style='color: #00E676 !important; border-bottom-color: rgba(0, 230, 118, 0.3);'>📱 微信一键复制区</div>", unsafe_allow_html=True)
-            st.markdown("<p style='color: #94A3B8; font-size: 14px; margin-bottom: 8px;'>点击下方代码框右上角的【复制】图标，然后直接打开微信粘贴发送即可。</p>", unsafe_allow_html=True)
+            st.markdown("<div class='card-header-gold' style='color: #00E676 !important; border-bottom-color: rgba(0, 230, 118, 0.3);'>📱 报告分享</div>", unsafe_allow_html=True)
             
-            st.code(wx_text, language="text")
+            # 转义文本以供 JS 使用
+            js_text = json.dumps(wx_text)
+            
+            html_code = f"""
+            <div style="font-family: sans-serif;">
+                <button onclick="shareReport()" style="
+                    width: 100%;
+                    background: linear-gradient(90deg, #00E676 0%, #00B4D8 100%);
+                    color: #090C10;
+                    font-size: 20px;
+                    font-weight: 900;
+                    padding: 15px;
+                    border: none;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    box-shadow: 0 4px 15px rgba(0, 230, 118, 0.3);
+                    transition: all 0.2s ease;
+                ">
+                    📤 点击发送给微信好友或朋友圈
+                </button>
+                <p style="color: #94A3B8; font-size: 14px; margin-top: 10px; text-align: center;">
+                    * 在手机上点击将唤起系统分享菜单，直接选择微信即可发送。
+                </p>
+            </div>
+
+            <script>
+            function shareReport() {{
+                var reportText = {js_text};
+                
+                if (navigator.share) {{
+                    navigator.share({{
+                        title: '量化对冲分析报告',
+                        text: reportText
+                    }}).then(() => console.log('分享成功'))
+                      .catch((error) => console.log('分享失败', error));
+                }} else {{
+                    // 降级方案：如果不支持系统分享，则复制到剪贴板
+                    var textArea = document.createElement("textarea");
+                    textArea.value = reportText;
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    try {{
+                        document.execCommand('copy');
+                        alert('✅ 当前浏览器不支持直接分享，报告已复制。\\n请直接打开微信粘贴发送即可。');
+                    }} catch (err) {{
+                        alert('❌ 复制失败，请手动截图或复制。');
+                    }}
+                    document.body.removeChild(textArea);
+                }}
+            }}
+            </script>
+            """
+            
+            components.html(html_code, height=120)
 
         except Exception as e:
             status_placeholder.empty()
