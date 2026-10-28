@@ -529,7 +529,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (暗黑金融终端风 - 终极暴力修复)
+# 主界面 (暗黑金融终端风 - 彻底消灭白底)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
@@ -545,6 +545,7 @@ div[data-testid="stConnectionStatus"],
 div[class*="StatusWidget"],
 div[class*="stStatusWidget"],
 div[class*="RunningMan"],
+div[class*="stSpinner"],
 iframe[title="streamlit_fragment"],
 #portal {
     display: none !important;
@@ -585,38 +586,36 @@ header { visibility: hidden !important; }
     color: #FF3366; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.5px;
 }
 
-/* 输入框标签 */
-[data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stDateInput"] label {
-    font-size: 18px !important; font-weight: 600 !important; color: #94A3B8 !important; margin-bottom: 4px !important;
-}
-
-/* 输入框内部 */
-[data-baseweb="input"], [data-baseweb="base-input"] {
+/* ============================================================
+   彻底覆盖日期框输入区的白底，以及日历图标的白底
+   ============================================================ */
+[data-testid="stDateInput"] > div {
     background-color: #1A2332 !important;
     border: 1px solid #2D3748 !important;
     border-radius: 6px !important;
 }
-[data-testid="stTextInput"] input, 
-[data-testid="stNumberInput"] input, 
 [data-testid="stDateInput"] input {
-    background-color: transparent !important; 
+    background-color: transparent !important;
     color: #00E5FF !important;
     font-family: 'Courier New', Courier, monospace !important; font-weight: 700 !important;
     font-size: 22px !important; min-height: 54px !important;
-    padding: 10px 14px !important;
 }
-[data-testid="stDateInput"] svg { width: 24px !important; height: 24px !important; fill: #00E5FF; color: #00E5FF; }
+[data-testid="stDateInput"] button {
+    background-color: transparent !important;
+    color: #00E5FF !important;
+}
+[data-testid="stDateInput"] svg {
+    fill: #00E5FF !important;
+    color: #00E5FF !important;
+}
 
-/* ============================================================
-   日历弹窗：终极深度覆盖，消灭一切红色、白色、下划线
-   ============================================================ */
+/* 日历弹窗：终极深度覆盖，消灭一切红色、白色、下划线 */
 [data-testid="stDateInputCalendar"],
 [data-baseweb="calendar"] {
     background-color: #1A2332 !important;
     border: 1px solid #2D3748 !important;
     box-shadow: 0 10px 25px rgba(0,0,0,0.5) !important;
 }
-/* 强制文字浅色，去下划线 */
 [data-testid="stDateInputCalendar"] *,
 [data-baseweb="calendar"] * { 
     color: #E2E8F0 !important; 
@@ -625,13 +624,11 @@ header { visibility: hidden !important; }
     text-decoration: none !important;
     background-color: transparent !important;
 }
-/* 悬浮态 */
 [data-testid="stDateInputCalendar"] div[role="gridcell"]:hover,
 [data-baseweb="calendar"] div[role="gridcell"]:hover { 
     background-color: rgba(0,229,255,0.2) !important; 
     border-radius: 4px !important;
 }
-/* 选中的那一天（不管它是 button 还是 div） */
 [data-testid="stDateInputCalendar"] [aria-selected="true"],
 [data-baseweb="calendar"] [aria-selected="true"],
 [data-testid="stDateInputCalendar"] [data-selected="true"],
@@ -647,9 +644,27 @@ header { visibility: hidden !important; }
     color: #090C10 !important; 
 }
 
-/* ============================================================
-   折叠面板 (Expander)：彻底解决白底白字
-   ============================================================ */
+/* 输入框标签 */
+[data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stDateInput"] label {
+    font-size: 18px !important; font-weight: 600 !important; color: #94A3B8 !important; margin-bottom: 4px !important;
+}
+
+/* 文本和数字输入框 */
+[data-baseweb="input"], [data-baseweb="base-input"] {
+    background-color: #1A2332 !important;
+    border: 1px solid #2D3748 !important;
+    border-radius: 6px !important;
+}
+[data-testid="stTextInput"] input, 
+[data-testid="stNumberInput"] input {
+    background-color: transparent !important; 
+    color: #00E5FF !important;
+    font-family: 'Courier New', Courier, monospace !important; font-weight: 700 !important;
+    font-size: 22px !important; min-height: 54px !important;
+    padding: 10px 14px !important;
+}
+
+/* 折叠面板 (Expander)：彻底解决白底白字 */
 [data-testid="stExpander"] {
     background-color: #111820 !important; 
     border: 1px solid #1E293B !important; 
@@ -741,113 +756,120 @@ if st.button("🚀 开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        with st.spinner("系统运算中..."):
-            try:
-                code = code.strip()
-                qty = int(qty)
+        # 用自定义的占位符替代 st.spinner，彻底消灭那个丑陋的白色框
+        status_placeholder = st.empty()
+        status_placeholder.info("⏳ 正在并发请求数据并计算，请稍候...")
+        
+        try:
+            code = code.strip()
+            qty = int(qty)
 
-                stock_df = add_indicators(fetch_stock_daily(code))
-                index_df = fetch_index_daily()
-                rt = fetch_realtime(code)
+            stock_df = add_indicators(fetch_stock_daily(code))
+            index_df = fetch_index_daily()
+            rt = fetch_realtime(code)
 
-                price = rt.get("price", stock_df["close"].iloc[-1])
-                name = rt.get("name", code)
-                beta = calc_beta(stock_df, index_df)
-                market_value = price * qty
+            price = rt.get("price", stock_df["close"].iloc[-1])
+            name = rt.get("name", code)
+            beta = calc_beta(stock_df, index_df)
+            market_value = price * qty
 
-                industry = fetch_stock_industry(code)
-                matched_industry = find_industry_etf(name, industry)
-                is_industry_etf = False
-                
-                if matched_industry:
-                    multi = fetch_etf_daily_multi(matched_industry["code"], days=90)
-                    corr = calc_correlation_r2(stock_df, multi["best_df"], window=60)
-                    best_etf = matched_industry
-                    etf_source = multi["best_source"]
-                    compare_results = [{"ETF代码": best_etf["code"], "ETF名称": best_etf["name"], "R²": corr["r2"] if corr["r2"] else 0}]
-                    is_industry_etf = True
-                    etf_rt = fetch_etf_realtime(best_etf["code"])
-                    etf_price = etf_rt.get("price")
-                
-                if not is_industry_etf:
-                    best_etf, corr, etf_hist, etf_source, compare_results = select_best_broad_etf(code, stock_df, beta)
-                    etf_rt = fetch_etf_realtime(best_etf["code"])
-                    etf_price = etf_rt.get("price")
+            industry = fetch_stock_industry(code)
+            matched_industry = find_industry_etf(name, industry)
+            is_industry_etf = False
+            
+            if matched_industry:
+                multi = fetch_etf_daily_multi(matched_industry["code"], days=90)
+                corr = calc_correlation_r2(stock_df, multi["best_df"], window=60)
+                best_etf = matched_industry
+                etf_source = multi["best_source"]
+                compare_results = [{"ETF代码": best_etf["code"], "ETF名称": best_etf["name"], "R²": corr["r2"] if corr["r2"] else 0}]
+                is_industry_etf = True
+                etf_rt = fetch_etf_realtime(best_etf["code"])
+                etf_price = etf_rt.get("price")
+            
+            if not is_industry_etf:
+                best_etf, corr, etf_hist, etf_source, compare_results = select_best_broad_etf(code, stock_df, beta)
+                etf_rt = fetch_etf_realtime(best_etf["code"])
+                etf_price = etf_rt.get("price")
 
-                trend = run_trend_engine(stock_df, index_df)
-                specific_actions = generate_specific_actions(best_etf, etf_price, trend["rating"], market_value, beta, is_industry_etf)
+            trend = run_trend_engine(stock_df, index_df)
+            specific_actions = generate_specific_actions(best_etf, etf_price, trend["rating"], market_value, beta, is_industry_etf)
 
-                plans = generate_hedge_plans(
-                    trend["rating"], corr, has_margin, has_option, 
-                    market_value, qty, beta, code, name, best_etf, etf_price, is_industry_etf
-                )
+            plans = generate_hedge_plans(
+                trend["rating"], corr, has_margin, has_option, 
+                market_value, qty, beta, code, name, best_etf, etf_price, is_industry_etf
+            )
+            
+            # 计算完毕，清空加载提示
+            status_placeholder.empty()
 
-                pnl = (price - buy_price) * qty
-                pnl_class = "highlight-up" if pnl >= 0 else "highlight-down"
-                pnl_sign = "+" if pnl >= 0 else ""
+            pnl = (price - buy_price) * qty
+            pnl_class = "highlight-up" if pnl >= 0 else "highlight-down"
+            pnl_sign = "+" if pnl >= 0 else ""
 
-                # 终端风的数据卡片
-                st.markdown(f"""
-                <div class="terminal-card">
-                    <div class="card-header">持仓概览</div>
-                    <div style="font-size: 24px; font-weight: 800; color: #E2E8F0; margin-bottom: 15px;">
-                        {name} <span style="color: #64748B; font-size: 18px;">({code})</span>
-                    </div>
-                    <div class="stat-row"><span class="stat-label">现价</span><span class="stat-value">{price:.2f}</span></div>
-                    <div class="stat-row"><span class="stat-label">成本</span><span class="stat-value">{buy_price:.2f}</span></div>
-                    <div class="stat-row"><span class="stat-label">持仓数量</span><span class="stat-value">{qty} 股</span></div>
-                    <div class="stat-row"><span class="stat-label">总市值</span><span class="stat-value">{market_value:.0f} 元</span></div>
-                    <div class="stat-row"><span class="stat-label">浮动盈亏</span><span class="stat-value {pnl_class}">{pnl_sign}{pnl:.0f} 元</span></div>
-                    <div style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #1E293B;">
-                        <div class="stat-row"><span class="stat-label">所属行业</span><span class="stat-value">{industry}</span></div>
-                        <div class="stat-row"><span class="stat-label">趋势研判</span><span class="stat-value highlight-gold">{trend['rating']} ({trend['total']})</span></div>
-                        <div class="stat-row"><span class="stat-label">个股 Beta</span><span class="stat-value">{beta:.2f}</span></div>
-                    </div>
+            # 终端风的数据卡片
+            st.markdown(f"""
+            <div class="terminal-card">
+                <div class="card-header">持仓概览</div>
+                <div style="font-size: 24px; font-weight: 800; color: #E2E8F0; margin-bottom: 15px;">
+                    {name} <span style="color: #64748B; font-size: 18px;">({code})</span>
                 </div>
-                """, unsafe_allow_html=True)
+                <div class="stat-row"><span class="stat-label">现价</span><span class="stat-value">{price:.2f}</span></div>
+                <div class="stat-row"><span class="stat-label">成本</span><span class="stat-value">{buy_price:.2f}</span></div>
+                <div class="stat-row"><span class="stat-label">持仓数量</span><span class="stat-value">{qty} 股</span></div>
+                <div class="stat-row"><span class="stat-label">总市值</span><span class="stat-value">{market_value:.0f} 元</span></div>
+                <div class="stat-row"><span class="stat-label">浮动盈亏</span><span class="stat-value {pnl_class}">{pnl_sign}{pnl:.0f} 元</span></div>
+                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #1E293B;">
+                    <div class="stat-row"><span class="stat-label">所属行业</span><span class="stat-value">{industry}</span></div>
+                    <div class="stat-row"><span class="stat-label">趋势研判</span><span class="stat-value highlight-gold">{trend['rating']} ({trend['total']})</span></div>
+                    <div class="stat-row"><span class="stat-label">个股 Beta</span><span class="stat-value">{beta:.2f}</span></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-                if is_industry_etf:
-                    st.markdown("<div class='card-header' style='margin-top:20px;'>动态行业 ETF 匹配</div>", unsafe_allow_html=True)
-                    st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
-                    if corr["r2"] is not None:
-                        grade = r2_grade(corr["r2"])
-                        if grade["label"] in ["强匹配", "中等匹配"]:
-                            st.success(f"✅ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 适合作为行业对冲工具。")
-                        else:
-                            st.warning(f"⚠️ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 相关性偏低，行业对冲效果可能有限，请谨慎使用。")
-                else:
-                    st.markdown("<div class='card-header' style='margin-top:20px;'>宽基 ETF 智能优选</div>", unsafe_allow_html=True)
-                    st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
-                    if corr["r2"] is not None:
-                        st.success(f"✅ 最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
+            if is_industry_etf:
+                st.markdown("<div class='card-header' style='margin-top:20px;'>动态行业 ETF 匹配</div>", unsafe_allow_html=True)
+                st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
+                if corr["r2"] is not None:
+                    grade = r2_grade(corr["r2"])
+                    if grade["label"] in ["强匹配", "中等匹配"]:
+                        st.success(f"✅ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 适合作为行业对冲工具。")
+                    else:
+                        st.warning(f"⚠️ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 相关性偏低，行业对冲效果可能有限，请谨慎使用。")
+            else:
+                st.markdown("<div class='card-header' style='margin-top:20px;'>宽基 ETF 智能优选</div>", unsafe_allow_html=True)
+                st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
+                if corr["r2"] is not None:
+                    st.success(f"✅ 最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
 
-                if specific_actions:
-                    st.markdown("<div class='card-header' style='margin-top:20px;'>执行指令清单</div>", unsafe_allow_html=True)
-                    for act in specific_actions:
-                        if act.startswith("⚠️"):
-                            st.warning(act)
-                        else:
-                            st.success(act)
+            if specific_actions:
+                st.markdown("<div class='card-header' style='margin-top:20px;'>执行指令清单</div>", unsafe_allow_html=True)
+                for act in specific_actions:
+                    if act.startswith("⚠️"):
+                        st.warning(act)
+                    else:
+                        st.success(act)
 
-                st.markdown("<div class='card-header' style='margin-top:30px;'>分层对冲方案</div>", unsafe_allow_html=True)
-                
-                for plan in plans:
-                    with st.expander(f"🔹 {plan['category']}：{plan['name']}", expanded=True):
-                        st.markdown(f"**适用场景**：{plan['scenario']}")
-                        st.info(f"**操作建议**：{plan['detail']}")
-                        st.warning(f"**成本与代价**：{plan['cost']}")
-                        
-                        if plan.get("action"):
-                            act = plan["action"]
-                            st.markdown(
-                                f"> **执行清单：**\n"
-                                f"> 标的：**{act['target']}**\n"
-                                f"> 方向：**{act['side']}**\n"
-                                f"> 数量：**{act['qty']}**\n"
-                                f"> 价格：{act['price']}"
-                            )
+            st.markdown("<div class='card-header' style='margin-top:30px;'>分层对冲方案</div>", unsafe_allow_html=True)
+            
+            for plan in plans:
+                with st.expander(f"🔹 {plan['category']}：{plan['name']}", expanded=True):
+                    st.markdown(f"**适用场景**：{plan['scenario']}")
+                    st.info(f"**操作建议**：{plan['detail']}")
+                    st.warning(f"**成本与代价**：{plan['cost']}")
+                    
+                    if plan.get("action"):
+                        act = plan["action"]
+                        st.markdown(
+                            f"> **执行清单：**\n"
+                            f"> 标的：**{act['target']}**\n"
+                            f"> 方向：**{act['side']}**\n"
+                            f"> 数量：**{act['qty']}**\n"
+                            f"> 价格：{act['price']}"
+                        )
 
-                st.markdown("<br><div style='text-align: center; color: #64748B; font-size: 13px;'>本终端仅提供量化分析参考，不构成投资建议。请手动至券商APP核验并下单。</div>", unsafe_allow_html=True)
+            st.markdown("<br><div style='text-align: center; color: #64748B; font-size: 13px;'>本终端仅提供量化分析参考，不构成投资建议。请手动至券商APP核验并下单。</div>", unsafe_allow_html=True)
 
-            except Exception as e:
-                st.error(f"终端错误：{e}")
+        except Exception as e:
+            status_placeholder.empty()
+            st.error(f"终端错误：{e}")
