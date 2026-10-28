@@ -529,15 +529,35 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (暗黑金融终端风 - 终极修复)
+# 主界面 (暗黑金融终端风 - 终极暴力修复)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
 
 st.markdown("""
 <style>
-/* 隐藏 Streamlit 默认元素 */
-[data-testid="stStatusWidget"], [data-testid="stAppRunningMan"], [class*="RunningMan"] { display: none !important; }
+/* ============================================================
+   暴力隐藏所有 Streamlit 运行时的悬浮状态框（包括白底黑字的 Running）
+   ============================================================ */
+div[data-testid="stStatusWidget"],
+div[data-testid="stAppRunningMan"],
+div[data-testid="stConnectionStatus"],
+div[class*="StatusWidget"],
+div[class*="stStatusWidget"],
+div[class*="RunningMan"],
+iframe[title="streamlit_fragment"],
+#portal {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    position: absolute !important;
+    top: -9999px !important;
+    left: -9999px !important;
+    width: 0 !important;
+    height: 0 !important;
+    z-index: -9999 !important;
+}
+
 #MainMenu { visibility: hidden !important; }
 header { visibility: hidden !important; }
 
@@ -587,51 +607,48 @@ header { visibility: hidden !important; }
 }
 [data-testid="stDateInput"] svg { width: 24px !important; height: 24px !important; fill: #00E5FF; color: #00E5FF; }
 
-/* 数字框加减按钮 */
-[data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"] {
-    background-color: transparent !important; color: #00E5FF !important; border-left: 1px solid #2D3748 !important;
-}
-[data-testid="stNumberInput"] button { background-color: transparent !important; color: #94A3B8 !important; border: none !important; }
-
 /* ============================================================
-   彻底解决日历弹窗问题（去除红底红字，全量暗黑+青色高亮）
+   日历弹窗：终极深度覆盖，消灭一切红色、白色、下划线
    ============================================================ */
-[data-testid="stDateInputCalendar"] {
+[data-testid="stDateInputCalendar"],
+[data-baseweb="calendar"] {
     background-color: #1A2332 !important;
     border: 1px solid #2D3748 !important;
     box-shadow: 0 10px 25px rgba(0,0,0,0.5) !important;
 }
-/* 弹窗内所有文字强制为浅色 */
-[data-testid="stDateInputCalendar"] * { 
+/* 强制文字浅色，去下划线 */
+[data-testid="stDateInputCalendar"] *,
+[data-baseweb="calendar"] * { 
     color: #E2E8F0 !important; 
     font-size: 20px !important; 
     font-weight: 600 !important; 
     text-decoration: none !important;
+    background-color: transparent !important;
 }
-/* 去掉原先诡异的下划线 */
-[data-testid="stDateInputCalendar"] [role="gridcell"] { 
-    min-width: 46px !important; min-height: 46px !important; 
-    text-decoration: none !important;
+/* 悬浮态 */
+[data-testid="stDateInputCalendar"] div[role="gridcell"]:hover,
+[data-baseweb="calendar"] div[role="gridcell"]:hover { 
+    background-color: rgba(0,229,255,0.2) !important; 
+    border-radius: 4px !important;
 }
-/* 鼠标悬浮 */
-[data-testid="stDateInputCalendar"] [role="gridcell"]:hover { 
-    background-color: rgba(0,229,255,0.2) !important; border-radius: 4px; 
-}
-/* 选中日期的背景和文字（覆盖原生的红色） */
+/* 选中的那一天（不管它是 button 还是 div） */
 [data-testid="stDateInputCalendar"] [aria-selected="true"],
-[data-baseweb="calendar"] [aria-selected="true"] { 
+[data-baseweb="calendar"] [aria-selected="true"],
+[data-testid="stDateInputCalendar"] [data-selected="true"],
+[data-baseweb="calendar"] [data-selected="true"] { 
     background-color: #00E5FF !important; 
-    color: #090C10 !important; 
-    border-radius: 4px; 
+    border-radius: 4px !important;
+    border: none !important;
 }
 [data-testid="stDateInputCalendar"] [aria-selected="true"] *,
-[data-baseweb="calendar"] [aria-selected="true"] * { 
+[data-baseweb="calendar"] [aria-selected="true"] *,
+[data-testid="stDateInputCalendar"] [data-selected="true"] *,
+[data-baseweb="calendar"] [data-selected="true"] * { 
     color: #090C10 !important; 
-    background-color: transparent !important;
 }
 
 /* ============================================================
-   彻底解决 Expander(折叠面板) 白底白字问题
+   折叠面板 (Expander)：彻底解决白底白字
    ============================================================ */
 [data-testid="stExpander"] {
     background-color: #111820 !important; 
@@ -639,7 +656,6 @@ header { visibility: hidden !important; }
     border-radius: 8px !important;
     box-shadow: none !important;
 }
-/* 折叠面板的标题区背景透明，文字亮青色 */
 [data-testid="stExpander"] details,
 [data-testid="stExpander"] summary {
     background-color: transparent !important;
@@ -650,7 +666,6 @@ header { visibility: hidden !important; }
 [data-testid="stExpander"] summary:hover {
     color: #00B4D8 !important;
 }
-/* 折叠面板内部的文字默认为浅灰 */
 [data-testid="stExpander"] .stMarkdown p {
     color: #E2E8F0 !important;
 }
