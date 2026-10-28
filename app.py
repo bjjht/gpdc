@@ -529,16 +529,14 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (暗黑金融终端风 - 彻底消灭白底)
+# 主界面 (暗黑金融终端风 - 修正日历头部)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
 
 st.markdown("""
 <style>
-/* ============================================================
-   暴力隐藏所有 Streamlit 运行时的悬浮状态框（包括白底黑字的 Running）
-   ============================================================ */
+/* 暴力隐藏所有 Streamlit 运行时的悬浮状态框 */
 div[data-testid="stStatusWidget"],
 div[data-testid="stAppRunningMan"],
 div[data-testid="stConnectionStatus"],
@@ -546,7 +544,6 @@ div[class*="StatusWidget"],
 div[class*="stStatusWidget"],
 div[class*="RunningMan"],
 div[class*="stSpinner"],
-iframe[title="streamlit_fragment"],
 #portal {
     display: none !important;
     visibility: hidden !important;
@@ -586,9 +583,7 @@ header { visibility: hidden !important; }
     color: #FF3366; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.5px;
 }
 
-/* ============================================================
-   彻底覆盖日期框输入区的白底，以及日历图标的白底
-   ============================================================ */
+/* 彻底覆盖日期框输入区的白底 */
 [data-testid="stDateInput"] > div {
     background-color: #1A2332 !important;
     border: 1px solid #2D3748 !important;
@@ -600,35 +595,51 @@ header { visibility: hidden !important; }
     font-family: 'Courier New', Courier, monospace !important; font-weight: 700 !important;
     font-size: 22px !important; min-height: 54px !important;
 }
-[data-testid="stDateInput"] button {
-    background-color: transparent !important;
-    color: #00E5FF !important;
-}
-[data-testid="stDateInput"] svg {
-    fill: #00E5FF !important;
-    color: #00E5FF !important;
-}
+[data-testid="stDateInput"] button { background-color: transparent !important; color: #00E5FF !important; }
+[data-testid="stDateInput"] svg { fill: #00E5FF !important; color: #00E5FF !important; }
 
-/* 日历弹窗：终极深度覆盖，消灭一切红色、白色、下划线 */
+/* ============================================================
+   日历弹窗：恢复年月选择按钮，彻底暗黑化
+   ============================================================ */
 [data-testid="stDateInputCalendar"],
 [data-baseweb="calendar"] {
     background-color: #1A2332 !important;
     border: 1px solid #2D3748 !important;
     box-shadow: 0 10px 25px rgba(0,0,0,0.5) !important;
 }
+
+/* 日历内文字颜色，但不再暴力透明背景 */
 [data-testid="stDateInputCalendar"] *,
 [data-baseweb="calendar"] * { 
     color: #E2E8F0 !important; 
     font-size: 20px !important; 
     font-weight: 600 !important; 
     text-decoration: none !important;
-    background-color: transparent !important;
 }
+
+/* 恢复年月控制按钮（使其可见并亮起） */
+[data-testid="stDateInputCalendar"] button,
+[data-baseweb="calendar"] button,
+[data-testid="stDateInputCalendar"] [role="button"],
+[data-baseweb="calendar"] [role="button"] {
+    background-color: transparent !important;
+    color: #00E5FF !important;
+    font-weight: 900 !important;
+    font-size: 22px !important;
+}
+[data-testid="stDateInputCalendar"] button svg,
+[data-baseweb="calendar"] button svg {
+    fill: #00E5FF !important;
+}
+
+/* 网格悬浮态 */
 [data-testid="stDateInputCalendar"] div[role="gridcell"]:hover,
 [data-baseweb="calendar"] div[role="gridcell"]:hover { 
     background-color: rgba(0,229,255,0.2) !important; 
     border-radius: 4px !important;
 }
+
+/* 选中的日期 */
 [data-testid="stDateInputCalendar"] [aria-selected="true"],
 [data-baseweb="calendar"] [aria-selected="true"],
 [data-testid="stDateInputCalendar"] [data-selected="true"],
@@ -715,8 +726,8 @@ header { visibility: hidden !important; }
 .stat-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
 .stat-label { color: #94A3B8; font-size: 16px; }
 .stat-value { color: #E2E8F0; font-family: 'Courier New', Courier, monospace; font-size: 18px; font-weight: bold; }
-.highlight-up { color: #FF3366; font-weight: 900; } /* A股红涨 */
-.highlight-down { color: #00E676; font-weight: 900; } /* A股绿跌 */
+.highlight-up { color: #FF3366; font-weight: 900; }
+.highlight-down { color: #00E676; font-weight: 900; }
 .highlight-gold { color: #FFD700; }
 
 /* 数据表 */
@@ -756,7 +767,7 @@ if st.button("🚀 开始分析"):
     if not code.strip() or buy_price is None or qty is None:
         st.warning("请先填写股票代码、买入价和数量后再点击“开始分析”。")
     else:
-        # 用自定义的占位符替代 st.spinner，彻底消灭那个丑陋的白色框
+        # 用自定义的占位符替代 st.spinner
         status_placeholder = st.empty()
         status_placeholder.info("⏳ 正在并发请求数据并计算，请稍候...")
         
@@ -800,14 +811,12 @@ if st.button("🚀 开始分析"):
                 market_value, qty, beta, code, name, best_etf, etf_price, is_industry_etf
             )
             
-            # 计算完毕，清空加载提示
             status_placeholder.empty()
 
             pnl = (price - buy_price) * qty
             pnl_class = "highlight-up" if pnl >= 0 else "highlight-down"
             pnl_sign = "+" if pnl >= 0 else ""
 
-            # 终端风的数据卡片
             st.markdown(f"""
             <div class="terminal-card">
                 <div class="card-header">持仓概览</div>
