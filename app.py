@@ -614,9 +614,7 @@ div[data-testid="stTextInput"] input::placeholder {
 [data-testid="stDataFrame"] * { font-size: 16px !important; color: #E2E8F0; }
 
 /* 自定义分享按钮容器 */
-div[data-testid="stCustomComponentV1"] iframe {
-    border: none !important; width: 100% !important;
-}
+div[data-testid="stCustomComponentV1"] iframe { border: none !important; width: 100% !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -799,7 +797,7 @@ if st.button("🚀 开始分析"):
             wx_text += "(本报告由量化终端生成，仅供参考)"
 
             # ============================================================
-            # 原生 Web Share API 分享按钮
+            # 原生 Web Share API 分享按钮（优化版：无弹窗打断，纯 JS 复制）
             # ============================================================
             st.markdown("<div class='card-header-gold' style='color: #00E676 !important; border-bottom-color: rgba(0, 230, 118, 0.3);'>📱 报告分享</div>", unsafe_allow_html=True)
             
@@ -807,8 +805,8 @@ if st.button("🚀 开始分析"):
             js_text = json.dumps(wx_text)
             
             html_code = f"""
-            <div style="font-family: sans-serif;">
-                <button onclick="shareReport()" style="
+            <div style="font-family: sans-serif; padding: 0 10px;">
+                <button id="shareBtn" onclick="shareReport()" style="
                     width: 100%;
                     background: linear-gradient(90deg, #00E676 0%, #00B4D8 100%);
                     color: #090C10;
@@ -820,17 +818,25 @@ if st.button("🚀 开始分析"):
                     cursor: pointer;
                     box-shadow: 0 4px 15px rgba(0, 230, 118, 0.3);
                     transition: all 0.2s ease;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 8px;
                 ">
-                    📤 点击发送给微信好友或朋友圈
+                    <span id="btnIcon">📤</span> <span id="btnText">点击发送给微信好友或朋友圈</span>
                 </button>
                 <p style="color: #94A3B8; font-size: 14px; margin-top: 10px; text-align: center;">
-                    * 在手机上点击将唤起系统分享菜单，直接选择微信即可发送。
+                    * 手机端：直接唤起系统分享面板<br>
+                    * 电脑端：点击后自动复制，去微信粘贴即可
                 </p>
             </div>
 
             <script>
             function shareReport() {{
                 var reportText = {js_text};
+                var btnText = document.getElementById("btnText");
+                var btnIcon = document.getElementById("btnIcon");
+                var btn = document.getElementById("shareBtn");
                 
                 if (navigator.share) {{
                     navigator.share({{
@@ -839,16 +845,28 @@ if st.button("🚀 开始分析"):
                     }}).then(() => console.log('分享成功'))
                       .catch((error) => console.log('分享失败', error));
                 }} else {{
-                    // 降级方案：如果不支持系统分享，则复制到剪贴板
+                    // 降级方案：不弹窗，直接复制并改变按钮文字
                     var textArea = document.createElement("textarea");
                     textArea.value = reportText;
+                    textArea.style.position = "fixed"; // 避免滚动
+                    textArea.style.opacity = "0";
                     document.body.appendChild(textArea);
+                    textArea.focus();
                     textArea.select();
                     try {{
                         document.execCommand('copy');
-                        alert('✅ 当前浏览器不支持直接分享，报告已复制。\\n请直接打开微信粘贴发送即可。');
+                        btnIcon.innerText = "✅";
+                        btnText.innerText = "报告已复制，请去微信粘贴";
+                        btn.style.background = "#00E676"; // 变成纯绿色
+                        setTimeout(() => {{
+                            btnIcon.innerText = "📤";
+                            btnText.innerText = "点击发送给微信好友或朋友圈";
+                            btn.style.background = "linear-gradient(90deg, #00E676 0%, #00B4D8 100%)";
+                        }}, 3000);
                     }} catch (err) {{
-                        alert('❌ 复制失败，请手动截图或复制。');
+                        btnIcon.innerText = "❌";
+                        btnText.innerText = "复制失败，请手动截图";
+                        btn.style.background = "#FF3366";
                     }}
                     document.body.removeChild(textArea);
                 }}
@@ -856,7 +874,7 @@ if st.button("🚀 开始分析"):
             </script>
             """
             
-            components.html(html_code, height=120)
+            components.html(html_code, height=140)
 
         except Exception as e:
             status_placeholder.empty()
