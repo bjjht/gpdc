@@ -529,7 +529,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (暗黑金融终端风 - 终极对齐)
+# 主界面 (终极对齐)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
@@ -584,7 +584,7 @@ header { visibility: hidden !important; }
 }
 
 /* ============================================================
-   终极暴力覆盖：确保所有 TextInput 完全一致
+   终极暴力覆盖：输入框外框与文字完全统一
    ============================================================ */
 [data-testid="stTextInput"] label {
     font-size: 18px !important; 
@@ -593,34 +593,33 @@ header { visibility: hidden !important; }
     margin-bottom: 4px !important;
 }
 
-/* 去掉外层容器的白底 */
-[data-testid="stTextInput"] > div > div,
-[data-baseweb="input"],
-[data-baseweb="base-input"] {
+/* 强制去掉外层容器的所有原生背景、阴影 */
+div[data-baseweb="base-input"], 
+div[data-baseweb="input"],
+div[data-baseweb="input"] > div {
     background-color: #1A2332 !important;
     border: 1px solid #2D3748 !important;
     border-radius: 6px !important;
     box-shadow: none !important;
 }
 
-/* 内部文字颜色和大小 */
-[data-testid="stTextInput"] input,
-[data-baseweb="input"] input {
-    background-color: transparent !important; 
+/* 强制内部文本和占位符的颜色、字体 */
+div[data-testid="stTextInput"] input {
     color: #00E5FF !important;
+    -webkit-text-fill-color: #00E5FF !important;
     font-family: 'Courier New', Courier, monospace !important; 
     font-weight: 700 !important;
     font-size: 22px !important; 
     min-height: 54px !important;
     padding: 10px 14px !important;
     border: none !important;
-    -webkit-text-fill-color: #00E5FF !important; /* 解决自动填充颜色覆盖 */
 }
 
-/* 占位符颜色 */
-[data-testid="stTextInput"] input::placeholder {
+/* 占位符 (placeholder) 单独处理 */
+div[data-testid="stTextInput"] input::placeholder {
     color: #64748B !important;
     -webkit-text-fill-color: #64748B !important;
+    opacity: 1 !important;
     font-size: 20px !important;
     font-weight: 600 !important;
 }
@@ -697,18 +696,23 @@ st.markdown(
     """, unsafe_allow_html=True
 )
 
-# 两行两列布局
+# 两行两列布局（绝对对齐版）
 row1_col1, row1_col2 = st.columns(2)
-code = row1_col1.text_input("股票代码", "")
-qty_str = row1_col2.text_input("数量（股）", value="", placeholder="如 100")
+with row1_col1:
+    st.markdown("<div style='font-size:18px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>股票代码</div>", unsafe_allow_html=True)
+    code = st.text_input("股票代码", label_visibility="collapsed")
+with row1_col2:
+    st.markdown("<div style='font-size:18px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>数量（股）</div>", unsafe_allow_html=True)
+    qty_str = st.text_input("数量", value="", placeholder="如 100", label_visibility="collapsed")
 
 row2_col1, row2_col2 = st.columns(2)
-buy_price_str = row2_col1.text_input("买入价", value="", placeholder="如 23.00")
+with row2_col1:
+    st.markdown("<div style='font-size:18px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>买入价</div>", unsafe_allow_html=True)
+    buy_price_str = st.text_input("买入价", value="", placeholder="如 23.00", label_visibility="collapsed")
 
 with row2_col2:
-    st.markdown("<label style='font-size:18px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>买入日期 (年 / 月 / 日)</label>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:18px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>买入日期 (年 / 月 / 日)</div>", unsafe_allow_html=True)
     c_y, c_m, c_d = st.columns(3)
-    
     inp_y = c_y.text_input("年", value="", placeholder="年", label_visibility="collapsed")
     inp_m = c_m.text_input("月", value="", placeholder="月", label_visibility="collapsed")
     inp_d = c_d.text_input("日", value="", placeholder="日", label_visibility="collapsed")
