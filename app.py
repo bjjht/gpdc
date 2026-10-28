@@ -529,7 +529,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (终极对齐 + 金色大字 + 导出报告)
+# 主界面 (终极对齐 + 金色大字 + 微信一键复制)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
@@ -567,7 +567,7 @@ header { visibility: hidden !important; }
 }
 [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li {
     color: #E2E8F0;
-    font-size: 18px !important; /* 正文整体加大 */
+    font-size: 18px !important;
 }
 
 /* 标题区 */
@@ -583,9 +583,7 @@ header { visibility: hidden !important; }
     color: #FF3366; font-size: 1.05rem; font-weight: 600; letter-spacing: 0.5px;
 }
 
-/* ============================================================
-   你要求的金色加大版块标题
-   ============================================================ */
+/* 金色加大版块标题 */
 .card-header-gold {
     font-size: 24px !important; 
     color: #FFD700 !important; 
@@ -680,6 +678,24 @@ div[data-testid="stTextInput"] input::placeholder {
 .stButton > button:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 20px rgba(0, 229, 255, 0.5) !important;
+}
+
+/* 微信复制区域的代码块样式覆盖 */
+.stCode {
+    background-color: #1A2332 !important;
+    border: 1px solid #2D3748 !important;
+    border-radius: 8px !important;
+}
+.stCode code {
+    color: #E2E8F0 !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    font-size: 16px !important;
+    line-height: 1.6 !important;
+}
+/* 代码块自带的复制按钮 */
+.stCode button {
+    color: #00E5FF !important;
+    background-color: transparent !important;
 }
 
 /* 复选框 */
@@ -823,45 +839,47 @@ if st.button("🚀 开始分析"):
             """, unsafe_allow_html=True)
 
             # ============================================================
-            # 生成下载报告的内容
+            # 生成用于微信复制的纯文本（去掉过多 Markdown，方便手机阅读）
             # ============================================================
-            report_md = f"# {name}（{code}）对冲分析报告\n\n"
-            report_md += f"- **现价**：{price:.2f}\n- **成本**：{buy_price:.2f}\n- **数量**：{qty} 股\n- **总市值**：{market_value:.0f} 元\n- **浮动盈亏**：{pnl_sign}{pnl:.0f} 元\n"
-            report_md += f"- **所属行业**：{industry}\n- **趋势研判**：{trend['rating']}（{trend['total']}）\n- **个股 Beta**：{beta:.2f}\n\n"
+            wx_text = f"【{name}（{code}）对冲分析报告】\n"
+            wx_text += f"--------------------------------\n"
+            wx_text += f"📊 持仓信息\n"
+            wx_text += f"现价：{price:.2f} | 成本：{buy_price:.2f}\n"
+            wx_text += f"数量：{qty} 股 | 总市值：{market_value:.0f} 元\n"
+            wx_text += f"浮动盈亏：{pnl_sign}{pnl:.0f} 元\n"
+            wx_text += f"所属行业：{industry} | 趋势研判：{trend['rating']} ({trend['total']}) | Beta：{beta:.2f}\n\n"
 
             if is_industry_etf:
                 st.markdown("<div class='card-header-gold'>动态行业 ETF 匹配</div>", unsafe_allow_html=True)
                 st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
-                report_md += f"## 动态行业 ETF 匹配\n匹配标的：{best_etf['name']}（{best_etf['code']}），R² = {corr['r2']:.3f}\n\n"
-                if corr["r2"] is not None:
-                    grade = r2_grade(corr["r2"])
-                    if grade["label"] in ["强匹配", "中等匹配"]:
-                        st.success(f"✅ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 适合作为行业对冲工具。")
-                    else:
-                        st.warning(f"⚠️ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 相关性偏低，行业对冲效果可能有限，请谨慎使用。")
+                grade = r2_grade(corr["r2"])
+                wx_text += f"🎯 行业ETF匹配\n匹配标的：{best_etf['name']}（{best_etf['code']}）\nR² = {corr['r2']:.3f}（{grade['label']}）\n\n"
+                if grade["label"] in ["强匹配", "中等匹配"]:
+                    st.success(f"✅ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 适合作为行业对冲工具。")
+                else:
+                    st.warning(f"⚠️ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 相关性偏低，行业对冲效果可能有限，请谨慎使用。")
             else:
                 st.markdown("<div class='card-header-gold'>宽基 ETF 智能优选</div>", unsafe_allow_html=True)
                 st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
-                report_md += f"## 宽基 ETF 智能优选\n最优匹配：{best_etf['name']}（{best_etf['code']}），R² = {corr['r2']:.3f}\n\n"
-                if corr["r2"] is not None:
-                    st.success(f"✅ 最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{r2_grade(corr['r2'])['label']}）")
+                grade = r2_grade(corr["r2"])
+                wx_text += f"🎯 宽基ETF优选\n最优匹配：{best_etf['name']}（{best_etf['code']}）\nR² = {corr['r2']:.3f}（{grade['label']}）\n\n"
+                st.success(f"✅ 最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）")
 
             if specific_actions:
                 st.markdown("<div class='card-header-gold'>执行指令清单</div>", unsafe_allow_html=True)
-                report_md += f"## 执行指令清单\n"
+                wx_text += f"⚡ 执行指令清单\n"
                 for act in specific_actions:
-                    # 清理掉 markdown 加粗符号方便保存为文本
-                    clean_act = act.replace("👉 ", "").replace("⚠️ ", "")
-                    report_md += f"- {clean_act}\n"
+                    clean_act = act.replace("👉 **", "").replace("**：", "：").replace("**", "").replace("⚠️ ", "")
+                    wx_text += f"{clean_act}\n"
                     
                     if act.startswith("⚠️"):
                         st.warning(act)
                     else:
                         st.success(act)
-                report_md += "\n"
+                wx_text += "\n"
 
             st.markdown("<div class='card-header-gold'>分层对冲方案</div>", unsafe_allow_html=True)
-            report_md += f"## 分层对冲方案\n\n"
+            wx_text += f"🛡️ 分层对冲方案\n"
             
             for plan in plans:
                 with st.expander(f"🔹 {plan['category']}：{plan['name']}", expanded=True):
@@ -869,10 +887,11 @@ if st.button("🚀 开始分析"):
                     st.info(f"**操作建议**：{plan['detail']}")
                     st.warning(f"**成本与代价**：{plan['cost']}")
                     
-                    report_md += f"### {plan['category']}：{plan['name']}\n"
-                    report_md += f"- **适用场景**：{plan['scenario']}\n"
-                    report_md += f"- **操作建议**：{plan['detail']}\n"
-                    report_md += f"- **成本与代价**：{plan['cost']}\n"
+                    wx_text += f"--------------------------------\n"
+                    wx_text += f"【{plan['category']}：{plan['name']}】\n"
+                    wx_text += f"场景：{plan['scenario']}\n"
+                    wx_text += f"建议：{plan['detail']}\n"
+                    wx_text += f"成本：{plan['cost']}\n"
                     
                     if plan.get("action"):
                         act = plan["action"]
@@ -883,22 +902,17 @@ if st.button("🚀 开始分析"):
                             f"> 数量：**{act['qty']}**\n"
                             f"> 价格：{act['price']}"
                         )
-                        report_md += f"- **执行清单**：标的 {act['target']} | 方向 {act['side']} | 数量 {act['qty']} | 价格 {act['price']}\n"
-                    report_md += "\n"
+                        wx_text += f"执行：标的 {act['target']} | 方向 {act['side']} | 数量 {act['qty']} | 价格 {act['price']}\n"
+            
+            wx_text += "\n(本报告由量化终端生成，仅供参考，不构成投资建议)"
 
             # ============================================================
-            # 渲染下载按钮
+            # 渲染微信一键复制区域
             # ============================================================
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.download_button(
-                label="📥 导出完整分析报告 (Markdown/文本)",
-                data=report_md,
-                file_name=f"{name}_{code}_对冲分析报告.md",
-                mime="text/markdown",
-                use_container_width=True
-            )
-
-            st.markdown("<div style='text-align: center; color: #64748B; font-size: 13px; margin-top:15px;'>本终端仅提供量化分析参考，不构成投资建议。请手动至券商APP核验并下单。</div>", unsafe_allow_html=True)
+            st.markdown("<div class='card-header-gold' style='color: #00E676 !important; border-bottom-color: rgba(0, 230, 118, 0.3);'>📱 微信一键复制区</div>", unsafe_allow_html=True)
+            st.markdown("<p style='color: #94A3B8; font-size: 14px; margin-bottom: 8px;'>点击下方代码框右上角的【复制】图标，然后直接打开微信粘贴发送即可。</p>", unsafe_allow_html=True)
+            
+            st.code(wx_text, language="text")
 
         except Exception as e:
             status_placeholder.empty()
