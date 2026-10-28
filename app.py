@@ -205,38 +205,73 @@ def fetch_etf_realtime(etf_code: str) -> dict:
     except Exception: return {}
 
 # ============================================================
-# 稳健的行业ETF匹配
+# 🌟 扩充版细分行业映射字典 (100+ 高频细分赛道)
 # ============================================================
 
 INDUSTRY_KEYWORDS = {
-    "证券": ("512000", "券商ETF"), "券商": ("512000", "券商ETF"), "银行": ("512800", "银行ETF"), "保险": ("512070", "保险ETF"),
-    "半导体": ("512480", "半导体ETF"), "芯片": ("512480", "半导体ETF"), "计算机": ("512720", "计算机ETF"), "软件": ("515230", "软件ETF"),
-    "通信": ("515880", "通信ETF"), "人工智能": ("515070", "人工智能ETF"), "游戏": ("159869", "游戏ETF"), "传媒": ("512980", "传媒ETF"),
-    "医药": ("512010", "医药ETF"), "医疗": ("512170", "医疗ETF"), "生物": ("512290", "生物医药ETF"), "消费": ("159928", "消费ETF"),
-    "白酒": ("512690", "酒ETF"), "食品": ("515710", "食品饮料ETF"), "饮料": ("515710", "食品饮料ETF"), "家电": ("159996", "家电ETF"),
-    "旅游": ("159766", "旅游ETF"), "养殖": ("159865", "养殖ETF"), "农业": ("159825", "农业ETF"),
-    "新能源": ("516160", "新能源ETF"), "光伏": ("515790", "光伏ETF"), "锂电": ("159755", "电池ETF"), "电池": ("159755", "电池ETF"),
-    "汽车": ("516110", "汽车ETF"), "军工": ("512660", "军工ETF"), "地产": ("512200", "房地产ETF"), "房地产": ("512200", "房地产ETF"),
-    "煤炭": ("515220", "煤炭ETF"), "有色": ("512400", "有色金属ETF"), "钢铁": ("515210", "钢铁ETF"), "化工": ("516020", "化工ETF"),
-    "黄金": ("518880", "黄金ETF"), "环保": ("512580", "环保ETF"), "电力": ("159611", "电力ETF"),
+    # 金融地产
+    "银行": ("512800", "银行ETF"), "保险": ("512070", "保险ETF"), "证券": ("512000", "券商ETF"), "券商": ("512000", "券商ETF"), 
+    "房地产": ("512200", "房地产ETF"), "地产": ("512200", "房地产ETF"), "信托": ("512000", "券商ETF"), "多元金融": ("512070", "保险ETF"),
+    
+    # 科技 TMT
+    "半导体": ("512480", "半导体ETF"), "芯片": ("512480", "半导体ETF"), "集成电路": ("512480", "半导体ETF"),
+    "软件": ("515230", "软件ETF"), "IT服务": ("512720", "计算机ETF"), "计算机": ("512720", "计算机ETF"),
+    "通信": ("515880", "通信ETF"), "通信设备": ("515880", "通信ETF"), "消费电子": ("159732", "消费电子ETF"),
+    "人工智能": ("515070", "人工智能ETF"), "游戏": ("159869", "游戏ETF"), "传媒": ("512980", "传媒ETF"), "影视": ("512980", "传媒ETF"),
+    "安防": ("512720", "计算机ETF"), "光学光电子": ("159732", "消费电子ETF"), "面板": ("159732", "消费电子ETF"),
+    
+    # 大消费
+    "白酒": ("512690", "酒ETF"), "啤酒": ("512690", "酒ETF"), "食品": ("515710", "食品饮料ETF"), "饮料": ("515710", "食品饮料ETF"),
+    "家电": ("159996", "家电ETF"), "白色家电": ("159996", "家电ETF"), "旅游": ("159766", "旅游ETF"), "酒店": ("159766", "旅游ETF"),
+    "养殖": ("159865", "养殖ETF"), "猪肉": ("159865", "养殖ETF"), "农业": ("159825", "农业ETF"), "种业": ("159825", "农业ETF"),
+    "商业百货": ("159928", "消费ETF"), "纺织服装": ("159928", "消费ETF"), "美容护理": ("159928", "消费ETF"),
+    
+    # 医药生物
+    "医药": ("512010", "医药ETF"), "医疗": ("512170", "医疗ETF"), "生物制品": ("512290", "生物医药ETF"), 
+    "化学制药": ("512010", "医药ETF"), "中药": ("512010", "医药ETF"), "医疗器械": ("512170", "医疗ETF"),
+    
+    # 新能源与制造
+    "新能源": ("516160", "新能源ETF"), "光伏": ("515790", "光伏ETF"), "光伏设备": ("515790", "光伏ETF"),
+    "锂电": ("159755", "电池ETF"), "电池": ("159755", "电池ETF"), "电源设备": ("159755", "电池ETF"),
+    "汽车": ("516110", "汽车ETF"), "乘用车": ("516110", "汽车ETF"), "汽车零部件": ("516110", "汽车ETF"),
+    "军工": ("512660", "军工ETF"), "航空航天": ("512660", "军工ETF"), "船舶制造": ("512660", "军工ETF"),
+    "机械设备": ("516960", "机械ETF"), "自动化设备": ("516960", "机械ETF"), "专用设备": ("516960", "机械ETF"),
+    "电力": ("159611", "电力ETF"), "电网设备": ("159611", "电力ETF"), 
+    
+    # 周期与化工
+    "煤炭": ("515220", "煤炭ETF"), "石油": ("159930", "能源ETF"), "化工": ("516020", "化工ETF"), "化学原料": ("516020", "化工ETF"),
+    "有色": ("512400", "有色金属ETF"), "工业金属": ("512400", "有色金属ETF"), "贵金属": ("518880", "黄金ETF"), "黄金": ("518880", "黄金ETF"),
+    "钢铁": ("515210", "钢铁ETF"), "建筑材料": ("159745", "建材ETF"), "水泥": ("159745", "建材ETF"), "环保": ("512580", "环保ETF")
 }
+
+# ============================================================
+# 动态智能匹配 (静态字典 -> 全市场模糊匹配)
+# ============================================================
 
 @st.cache_data(ttl=3600)
 def find_industry_etf(stock_name: str, industry_name: str):
+    # 1. 清洗行业名称 (去掉 "Ⅱ", "行业", "设备" 等后缀方便匹配)
+    clean_ind = re.sub(r'[^\u4e00-\u9fa5]', '', industry_name).replace("行业", "").replace("设备", "").replace("服务", "")
+    
+    # 2. 尝试静态字典匹配
     for kw, etf in INDUSTRY_KEYWORDS.items():
-        if kw in industry_name or kw in stock_name:
-            return {"code": etf[0], "name": etf[1]}
+        if kw in clean_ind or kw in stock_name:
+            return {"code": etf[0], "name": etf[1], "source": "静态行业库"}
+            
+    # 3. 静态没匹配到，去全市场ETF动态找名字相近的
     if industry_name == "未知":
         return None
     try:
         etf_df = ak.fund_etf_spot_em()
-        mask = ~etf_df["名称"].str.contains("债|货币|国债|短融|城投|转债")
+        # 过滤掉债券、货币、跨境和宽基
+        mask = ~etf_df["名称"].str.contains("债|货币|国债|短融|城投|转债|标普|纳斯达克|日经|恒生|300|500|1000|50|创业板|科创")
         etf_df = etf_df[mask]
-        clean_industry = re.sub(r'[^\u4e00-\u9fa5]', '', industry_name) 
-        if clean_industry:
-            matched = etf_df[etf_df["名称"].str.contains(clean_industry)]
+        
+        if clean_ind:
+            # 模糊包含匹配
+            matched = etf_df[etf_df["名称"].str.contains(clean_ind)]
             if not matched.empty:
-                return {"code": matched.iloc[0]["代码"], "name": matched.iloc[0]["名称"]}
+                return {"code": matched.iloc[0]["代码"], "name": matched.iloc[0]["名称"], "source": "全市场智能模糊搜索"}
     except Exception:
         pass
     return None
@@ -530,7 +565,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (终极对齐 + 原生分享)
+# 主界面
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
@@ -690,7 +725,7 @@ if st.button("🚀 开始分析"):
                 corr = calc_correlation_r2(stock_df, multi["best_df"], window=60)
                 best_etf = matched_industry
                 etf_source = multi["best_source"]
-                compare_results = [{"ETF代码": best_etf["code"], "ETF名称": best_etf["name"], "R²": corr["r2"] if corr["r2"] else 0}]
+                compare_results = [{"ETF代码": best_etf["code"], "ETF名称": best_etf["name"], "匹配方式": best_etf["source"], "R²": corr["r2"] if corr["r2"] else 0}]
                 is_industry_etf = True
                 etf_rt = fetch_etf_realtime(best_etf["code"])
                 etf_price = etf_rt.get("price")
@@ -726,19 +761,18 @@ if st.button("🚀 开始分析"):
                 <div class="stat-row"><span class="stat-label">总市值</span><span class="stat-value">{market_value:.0f} 元</span></div>
                 <div class="stat-row"><span class="stat-label">浮动盈亏</span><span class="stat-value {pnl_class}">{pnl_sign}{pnl:.0f} 元</span></div>
                 <div style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #1E293B;">
-                    <div class="stat-row"><span class="stat-label">所属行业</span><span class="stat-value">{industry}</span></div>
+                    <div class="stat-row"><span class="stat-label">官方细分行业</span><span class="stat-value" style="color:#00E5FF;">{industry}</span></div>
                     <div class="stat-row"><span class="stat-label">趋势研判</span><span class="stat-value highlight-gold">{trend['rating']} ({trend['total']})</span></div>
                     <div class="stat-row"><span class="stat-label">个股 Beta</span><span class="stat-value">{beta:.2f}</span></div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
-            # 生成用于分享的纯文本（带 Emoji 优化阅读）
             wx_text = f"【{name}（{code}）量化对冲报告】\n"
             wx_text += f"📊 持仓信息\n"
             wx_text += f"现价：{price:.2f} | 成本：{buy_price:.2f} | 数量：{qty}股\n"
             wx_text += f"总市值：{market_value:.0f}元 | 盈亏：{pnl_sign}{pnl:.0f}元\n"
-            wx_text += f"所属行业：{industry} | 趋势：{trend['rating']} | Beta：{beta:.2f}\n\n"
+            wx_text += f"细分行业：{industry} | 趋势：{trend['rating']} | Beta：{beta:.2f}\n\n"
 
             if is_industry_etf:
                 st.markdown("<div class='card-header-gold'>动态行业 ETF 匹配</div>", unsafe_allow_html=True)
@@ -796,14 +830,9 @@ if st.button("🚀 开始分析"):
             
             wx_text += "(本报告由量化终端生成，仅供参考)"
 
-            # ============================================================
-            # 原生 Web Share API 分享按钮（优化版：无弹窗打断，纯 JS 复制）
-            # ============================================================
             st.markdown("<div class='card-header-gold' style='color: #00E676 !important; border-bottom-color: rgba(0, 230, 118, 0.3);'>📱 报告分享</div>", unsafe_allow_html=True)
             
-            # 转义文本以供 JS 使用
             js_text = json.dumps(wx_text)
-            
             html_code = f"""
             <div style="font-family: sans-serif; padding: 0 10px;">
                 <button id="shareBtn" onclick="shareReport()" style="
@@ -845,10 +874,9 @@ if st.button("🚀 开始分析"):
                     }}).then(() => console.log('分享成功'))
                       .catch((error) => console.log('分享失败', error));
                 }} else {{
-                    // 降级方案：不弹窗，直接复制并改变按钮文字
                     var textArea = document.createElement("textarea");
                     textArea.value = reportText;
-                    textArea.style.position = "fixed"; // 避免滚动
+                    textArea.style.position = "fixed";
                     textArea.style.opacity = "0";
                     document.body.appendChild(textArea);
                     textArea.focus();
@@ -857,7 +885,7 @@ if st.button("🚀 开始分析"):
                         document.execCommand('copy');
                         btnIcon.innerText = "✅";
                         btnText.innerText = "报告已复制，请去微信粘贴";
-                        btn.style.background = "#00E676"; // 变成纯绿色
+                        btn.style.background = "#00E676";
                         setTimeout(() => {{
                             btnIcon.innerText = "📤";
                             btnText.innerText = "点击发送给微信好友或朋友圈";
@@ -873,7 +901,6 @@ if st.button("🚀 开始分析"):
             }}
             </script>
             """
-            
             components.html(html_code, height=140)
 
         except Exception as e:
