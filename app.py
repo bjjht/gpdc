@@ -529,7 +529,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (暗黑金融终端风 - 修正日历头部)
+# 主界面 (暗黑金融终端风 - 彻底重构日期输入)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
@@ -583,80 +583,8 @@ header { visibility: hidden !important; }
     color: #FF3366; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.5px;
 }
 
-/* 彻底覆盖日期框输入区的白底 */
-[data-testid="stDateInput"] > div {
-    background-color: #1A2332 !important;
-    border: 1px solid #2D3748 !important;
-    border-radius: 6px !important;
-}
-[data-testid="stDateInput"] input {
-    background-color: transparent !important;
-    color: #00E5FF !important;
-    font-family: 'Courier New', Courier, monospace !important; font-weight: 700 !important;
-    font-size: 22px !important; min-height: 54px !important;
-}
-[data-testid="stDateInput"] button { background-color: transparent !important; color: #00E5FF !important; }
-[data-testid="stDateInput"] svg { fill: #00E5FF !important; color: #00E5FF !important; }
-
-/* ============================================================
-   日历弹窗：恢复年月选择按钮，彻底暗黑化
-   ============================================================ */
-[data-testid="stDateInputCalendar"],
-[data-baseweb="calendar"] {
-    background-color: #1A2332 !important;
-    border: 1px solid #2D3748 !important;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.5) !important;
-}
-
-/* 日历内文字颜色，但不再暴力透明背景 */
-[data-testid="stDateInputCalendar"] *,
-[data-baseweb="calendar"] * { 
-    color: #E2E8F0 !important; 
-    font-size: 20px !important; 
-    font-weight: 600 !important; 
-    text-decoration: none !important;
-}
-
-/* 恢复年月控制按钮（使其可见并亮起） */
-[data-testid="stDateInputCalendar"] button,
-[data-baseweb="calendar"] button,
-[data-testid="stDateInputCalendar"] [role="button"],
-[data-baseweb="calendar"] [role="button"] {
-    background-color: transparent !important;
-    color: #00E5FF !important;
-    font-weight: 900 !important;
-    font-size: 22px !important;
-}
-[data-testid="stDateInputCalendar"] button svg,
-[data-baseweb="calendar"] button svg {
-    fill: #00E5FF !important;
-}
-
-/* 网格悬浮态 */
-[data-testid="stDateInputCalendar"] div[role="gridcell"]:hover,
-[data-baseweb="calendar"] div[role="gridcell"]:hover { 
-    background-color: rgba(0,229,255,0.2) !important; 
-    border-radius: 4px !important;
-}
-
-/* 选中的日期 */
-[data-testid="stDateInputCalendar"] [aria-selected="true"],
-[data-baseweb="calendar"] [aria-selected="true"],
-[data-testid="stDateInputCalendar"] [data-selected="true"],
-[data-baseweb="calendar"] [data-selected="true"] { 
-    background-color: #00E5FF !important; 
-    border-radius: 4px !important;
-    border: none !important;
-}
-[data-testid="stDateInputCalendar"] [aria-selected="true"] *,
-[data-baseweb="calendar"] [aria-selected="true"] *,
-[data-testid="stDateInputCalendar"] [data-selected="true"] *,
-[data-baseweb="calendar"] [data-selected="true"] * { 
-    color: #090C10 !important; 
-}
-
-/* 输入框标签 */
-[data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stDateInput"] label {
+/* 所有输入框标签 */
+[data-testid="stTextInput"] label, [data-testid="stNumberInput"] label, [data-testid="stSelectbox"] label {
     font-size: 18px !important; font-weight: 600 !important; color: #94A3B8 !important; margin-bottom: 4px !important;
 }
 
@@ -673,6 +601,34 @@ header { visibility: hidden !important; }
     font-family: 'Courier New', Courier, monospace !important; font-weight: 700 !important;
     font-size: 22px !important; min-height: 54px !important;
     padding: 10px 14px !important;
+}
+
+/* 下拉框 (Selectbox) */
+[data-baseweb="select"] > div {
+    background-color: #1A2332 !important;
+    border: 1px solid #2D3748 !important;
+    border-radius: 6px !important;
+    color: #00E5FF !important;
+    font-size: 22px !important; 
+    font-family: 'Courier New', Courier, monospace !important; 
+    font-weight: 700 !important;
+    min-height: 54px !important;
+}
+[data-baseweb="select"] * {
+    color: #00E5FF !important;
+}
+/* 下拉选项列表 */
+[data-baseweb="popover"] ul {
+    background-color: #1A2332 !important;
+    border: 1px solid #2D3748 !important;
+}
+[data-baseweb="popover"] li {
+    color: #E2E8F0 !important;
+    font-size: 18px !important;
+}
+[data-baseweb="popover"] li:hover {
+    background-color: #00E5FF !important;
+    color: #090C10 !important;
 }
 
 /* 折叠面板 (Expander)：彻底解决白底白字 */
@@ -754,7 +710,25 @@ qty = row1_col2.number_input("数量（股）", value=None, step=100, placeholde
 
 row2_col1, row2_col2 = st.columns(2)
 buy_price = row2_col1.number_input("买入价", value=None, step=0.01, format="%.2f", placeholder="如 23.00")
-buy_date = row2_col2.date_input("买入日期", value=None)
+
+with row2_col2:
+    st.markdown("<label style='font-size:18px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>买入日期 (年 / 月 / 日)</label>", unsafe_allow_html=True)
+    # 彻底抛弃 st.date_input，用三个下拉框完美替代，绝对没有白底！
+    c_y, c_m, c_d = st.columns([1.5, 1, 1])
+    curr_year = datetime.today().year
+    years = list(range(curr_year - 5, curr_year + 2))
+    months = list(range(1, 13))
+    days = list(range(1, 32))
+    
+    sel_y = c_y.selectbox("年", years, index=years.index(curr_year), label_visibility="collapsed")
+    sel_m = c_m.selectbox("月", months, index=datetime.today().month - 1, label_visibility="collapsed")
+    sel_d = c_d.selectbox("日", days, index=datetime.today().day - 1, label_visibility="collapsed")
+    
+    try:
+        buy_date = date(sel_y, sel_m, sel_d)
+    except ValueError:
+        buy_date = date(sel_y, sel_m, 28)
+
 
 st.markdown("<div style='margin-top: 15px; margin-bottom: 5px; color: #64748B; font-size: 14px; font-weight: 700;'>账户权限</div>", unsafe_allow_html=True)
 c1, c2 = st.columns(2)
