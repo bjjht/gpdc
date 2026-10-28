@@ -529,7 +529,7 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
     return plans
 
 # ============================================================
-# 主界面 (暗黑金融终端风 - 彻底统一输入框)
+# 主界面 (暗黑金融终端风 - 绝对统一版)
 # ============================================================
 
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
@@ -584,7 +584,7 @@ header { visibility: hidden !important; }
 }
 
 /* ============================================================
-   暴力统一所有输入框样式（股票、数量、价格、日期）
+   暴力统一：干掉所有输入框的白底
    ============================================================ */
 [data-testid="stTextInput"] label, 
 [data-testid="stNumberInput"] label {
@@ -594,17 +594,21 @@ header { visibility: hidden !important; }
     margin-bottom: 4px !important;
 }
 
-/* 外层容器 */
-[data-baseweb="input"], [data-baseweb="base-input"] {
+/* 输入框容器（彻底扒掉白底） */
+[data-testid="stTextInput"] > div > div,
+[data-testid="stNumberInput"] > div > div,
+[data-baseweb="input"],
+[data-baseweb="base-input"] {
     background-color: #1A2332 !important;
     border: 1px solid #2D3748 !important;
     border-radius: 6px !important;
     box-shadow: none !important;
 }
 
-/* 内部输入字 */
+/* 输入框内的文字和占位符（强制所有字体一模一样大） */
 [data-testid="stTextInput"] input, 
-[data-testid="stNumberInput"] input {
+[data-testid="stNumberInput"] input,
+[data-baseweb="input"] input {
     background-color: transparent !important; 
     color: #00E5FF !important;
     font-family: 'Courier New', Courier, monospace !important; 
@@ -613,6 +617,16 @@ header { visibility: hidden !important; }
     min-height: 54px !important;
     padding: 10px 14px !important;
     border: none !important;
+    -webkit-text-fill-color: #00E5FF !important; /* 关键：解决浏览器自动填充覆盖颜色的问题 */
+}
+
+/* 占位符颜色 */
+[data-testid="stTextInput"] input::placeholder, 
+[data-testid="stNumberInput"] input::placeholder {
+    color: #64748B !important;
+    -webkit-text-fill-color: #64748B !important;
+    font-size: 20px !important;
+    font-weight: 600 !important;
 }
 
 /* 数字加减按钮区域 */
@@ -712,18 +726,14 @@ row2_col1, row2_col2 = st.columns(2)
 buy_price = row2_col1.number_input("买入价", value=None, step=0.01, format="%.2f", placeholder="如 23.00")
 
 with row2_col2:
-    # 使用三个并排的纯文本输入框代替下拉框和日历，彻底统一风格
     st.markdown("<label style='font-size:18px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>买入日期 (年 / 月 / 日)</label>", unsafe_allow_html=True)
-    c_y, c_m, c_d = st.columns([1.5, 1, 1])
-    curr_y = str(datetime.today().year)
-    curr_m = str(datetime.today().month)
-    curr_d = str(datetime.today().day)
+    c_y, c_m, c_d = st.columns(3)
     
-    inp_y = c_y.text_input("年", value=curr_y, label_visibility="collapsed")
-    inp_m = c_m.text_input("月", value=curr_m, label_visibility="collapsed")
-    inp_d = c_d.text_input("日", value=curr_d, label_visibility="collapsed")
+    # 按要求留空
+    inp_y = c_y.text_input("年", value="", placeholder="年", label_visibility="collapsed")
+    inp_m = c_m.text_input("月", value="", placeholder="月", label_visibility="collapsed")
+    inp_d = c_d.text_input("日", value="", placeholder="日", label_visibility="collapsed")
     
-    # 容错解析，防止用户乱输导致崩溃
     try:
         buy_date = date(int(inp_y), int(inp_m), int(inp_d))
     except ValueError:
