@@ -6,16 +6,14 @@ from datetime import datetime, date, timedelta
 import time
 import json
 import re
-import difflib
 import requests
 import concurrent.futures
 from requests.exceptions import ConnectionError, Timeout
 import streamlit.components.v1 as components
 
 # ============================================================
-# 交易日判断（周末/节假日自动回退）
+# 交易日判断
 # ============================================================
-
 try:
     from tj_calendar import is_trade_day
     _CALENDAR_AVAILABLE = True
@@ -25,13 +23,11 @@ except ImportError:
 def get_latest_trading_day() -> date:
     today = datetime.today().date()
     if not _CALENDAR_AVAILABLE:
-        while today.weekday() >= 5:
-            today -= timedelta(days=1)
+        while today.weekday() >= 5: today -= timedelta(days=1)
         return today
     current = today
     for _ in range(30):
-        if is_trade_day(current):
-            return current
+        if is_trade_day(current): return current
         current -= timedelta(days=1)
     return today
 
@@ -43,14 +39,12 @@ def get_date_range(days: int) -> tuple:
 # ============================================================
 # 数据层
 # ============================================================
-
 def fetch_with_retry(func, *args, retries=1, delay=1, **kwargs):
     for i in range(retries):
         try:
             return func(*args, **kwargs)
         except (ConnectionError, Timeout) as e:
-            if i == retries - 1:
-                raise e
+            if i == retries - 1: raise e
             time.sleep(delay)
     return None
 
@@ -67,8 +61,7 @@ def fetch_stock_daily(code: str, days: int = 250) -> pd.DataFrame:
     symbol = _to_sina_symbol(code)
     start, end = get_date_range(days)
     df = fetch_with_retry(ak.stock_zh_a_daily, symbol=symbol, start_date=start, end_date=end, adjust="qfq")
-    if df is None or df.empty:
-        raise ValueError("获取股票历史数据失败")
+    if df is None or df.empty: raise ValueError("获取股票历史数据失败")
     df = df.rename(columns={"date": "date", "open": "open", "close": "close", "high": "high", "low": "low", "volume": "volume"})
     df["date"] = pd.to_datetime(df["date"])
     df["pct_chg"] = df["close"].pct_change() * 100
@@ -81,12 +74,11 @@ def fetch_stock_industry(code: str) -> str:
         if info is not None and not info.empty:
             if 'item' in info.columns and 'value' in info.columns:
                 row = info[info['item'].str.contains('行业', na=False)]
-                if not row.empty:
-                    return row.iloc[0]['value']
-    except Exception:
-        pass
+                if not row.empty: return row.iloc[0]['value']
+    except Exception: pass
     return "未知"
 
+# ETF 历史数据多源获取
 def _fetch_etf_em(etf_code: str, days: int) -> pd.DataFrame:
     start, end = get_date_range(days)
     df = ak.fund_etf_hist_em(symbol=etf_code, period="daily", start_date=start, end_date=end, adjust="qfq")
@@ -206,9 +198,8 @@ def fetch_etf_realtime(etf_code: str) -> dict:
     except Exception: return {}
 
 # ============================================================
-# 🌟 终极行业匹配：三级智能联想算法
+# 🌟 终极行业匹配：优先细分行业 -> 词根拆解 -> 宽基降级
 # ============================================================
-
 @st.cache_data(ttl=3600)
 def find_industry_etf(stock_name: str, industry_name: str):
     try:
@@ -216,55 +207,48 @@ def find_industry_etf(stock_name: str, industry_name: str):
     except Exception:
         return None
     
-    if etf_df is None or etf_df.empty:
-        return None
+    if etf_df is None or etf_df.empty: return None
 
-    # 过滤掉债券、货币、跨境、纯宽基等不相关的 ETF
-    mask = ~etf_df["名称"].str.contains("债|货币|国债|短融|城投|转债|标普|纳斯达克|日经|恒生|300|500|1000|50|创业板|科创|A50|A500")
-    etf_df = etf_df[mask]
-    
-    if etf_df.empty:
-        return None
+    # 1. 过滤掉纯宽基、债券、货币、跨境等。保留带行业特征的ETF（比如“光伏50”保留，“上证50”剔除）
+    pure_broad = "^(上证50|沪深300|中证500|中证1000|创业板|科创50|深证100|中证A500|MSCI|标普|纳斯达克|日经|恒生)"
+    mask = ~etf_df["名称"].str.contains("债|货币|国债|短融|城投|转债|" + pure_broad, regex=True)
+    pool = etf_df[mask]
 
     clean_ind = re.sub(r'[^\u4e00-\u9fa5]', '', industry_name).replace("行业", "").replace("设备", "").replace("服务", "")
     clean_name = re.sub(r'[^\u4e00-\u9fa5]', '', stock_name)
 
-    # 【第一级】：直接包含匹配（比如行业叫"证券"，ETF叫"券商ETF"或"证券ETF"）
+    # Level 1: 官方细分行业精准匹配
+    # 比如：行业叫"证券"，直接找"证券ETF"；行业叫"半导体"，找"半导体ETF"
     if clean_ind:
-        direct_match = etf_df[etf_df["名称"].str.contains(clean_ind)]
+        direct_match = pool[pool["名称"].str.contains(clean_ind)]
         if not direct_match.empty:
-            # 取名字最短的，通常是最核心的行业 ETF
             direct_match = direct_match.sort_values(by="名称", key=lambda x: x.str.len())
-            return {"code": direct_match.iloc[0]["代码"], "name": direct_match.iloc[0]["名称"], "source": f"精确包含 ({clean_ind})"}
+            return {"code": direct_match.iloc[0]["代码"], "name": direct_match.iloc[0]["名称"], "source": f"官方细分行业精准匹配 ({clean_ind})"}
 
-    # 【第二级】：N-gram 拆解匹配（比如行业叫"半导体及元件"，拆出"半导"、"导体"、"元件"去搜）
-    if len(clean_ind) >= 2:
-        ngrams = [clean_ind[i:i+2] for i in range(len(clean_ind)-1)]
-        for ng in ngrams:
-            match = etf_df[etf_df["名称"].str.contains(ng)]
-            if not match.empty:
-                match = match.sort_values(by="名称", key=lambda x: x.str.len())
-                return {"code": match.iloc[0]["代码"], "name": match.iloc[0]["名称"], "source": f"短语拆解 ({ng})"}
+    # Level 2: 官方细分行业词根拆解匹配
+    # 比如：行业叫"电池化学品"，拆出"电池"去找"电池ETF"；行业叫"光学光电子"，拆出"光电子"
+    if clean_ind:
+        # 从长到短拆解
+        for i in range(len(clean_ind)-1, 1, -1):
+            for j in range(len(clean_ind)-i+1):
+                sub_kw = clean_ind[j:j+i]
+                if len(sub_kw) >= 2:
+                    match = pool[pool["名称"].str.contains(sub_kw)]
+                    if not match.empty:
+                        match = match.sort_values(by="名称", key=lambda x: x.str.len())
+                        return {"code": match.iloc[0]["代码"], "name": match.iloc[0]["名称"], "source": f"细分行业核心词匹配 ({sub_kw})"}
 
-    # 【第三级】：模糊相似度匹配（利用 NLP 计算名字相似度）
-    def calc_sim(etf_name):
-        sim1 = difflib.SequenceMatcher(None, clean_ind, etf_name).ratio()
-        sim2 = difflib.SequenceMatcher(None, clean_name, etf_name).ratio()
-        return max(sim1, sim2)
-
-    etf_df["相似度"] = etf_df["名称"].apply(calc_sim)
-    best_match = etf_df.sort_values(by="相似度", ascending=False).iloc[0]
-    
-    # 如果相似度还不错，就采用
-    if best_match["相似度"] > 0.25:
-        return {"code": best_match["代码"], "name": best_match["名称"], "source": f"智能联想 (相似度{best_match['相似度']:.2f})"}
+    # Level 3: 股票名称模糊匹配
+    if clean_name:
+        match = pool[pool["名称"].str.contains(clean_name)]
+        if not match.empty:
+            return {"code": match.iloc[0]["代码"], "name": match.iloc[0]["名称"], "source": f"股票名称包含匹配 ({clean_name})"}
 
     return None
 
 # ============================================================
-# 宽基ETF智能优选
+# 宽基ETF智能优选（兜底）
 # ============================================================
-
 BROAD_ETF_POOL = [
     {"code": "510050", "name": "上证50ETF", "index_name": "上证50"},
     {"code": "510300", "name": "300ETF", "index_name": "沪深300"},
@@ -342,10 +326,6 @@ def option_month_label() -> str:
 def format_option_name(etf_prefix: str, opt_type: str, month: str, strike: float) -> str:
     return f"{etf_prefix}{opt_type}{month}{int(round(strike * 1000))}"
 
-# ============================================================
-# 针对最优匹配的【具体执行清单】生成器
-# ============================================================
-
 def generate_specific_actions(best_etf, etf_price, rating, market_value, beta, is_industry_etf):
     actions = []
     etf_price_used = etf_price if etf_price else 4.0
@@ -383,10 +363,6 @@ def generate_specific_actions(best_etf, etf_price, rating, market_value, beta, i
         actions.append(f"👉 **行业ETF融券**：融券卖出 **{short_shares} 份** {best_etf['name']}（{best_etf['code']}）。")
     
     return actions
-
-# ============================================================
-# 指标层与趋势引擎
-# ============================================================
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -428,10 +404,6 @@ def run_trend_engine(stock_df, index_df) -> dict:
     elif total > -1.2: rating = "中性偏空"
     else: rating = "偏空"
     return {"rating": rating, "total": round(total, 2)}
-
-# ============================================================
-# 科学严谨·分层决策引擎
-# ============================================================
 
 def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty, beta, stock_code, stock_name, best_etf, etf_price, is_industry_etf):
     plans = []
@@ -546,13 +518,11 @@ def generate_hedge_plans(rating, corr, has_margin, has_option, market_value, qty
             "cost": "无",
             "action": None
         })
-
     return plans
 
 # ============================================================
 # 主界面
 # ============================================================
-
 st.set_page_config(page_title="持仓对冲分析终端", layout="centered")
 
 st.markdown("""
@@ -647,7 +617,6 @@ st.markdown(
     """, unsafe_allow_html=True
 )
 
-# 两行两列布局
 row1_col1, row1_col2 = st.columns(2)
 with row1_col1:
     st.markdown("<div style='font-size:18px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>股票代码</div>", unsafe_allow_html=True)
@@ -772,7 +741,7 @@ if st.button("🚀 开始分析"):
                 st.markdown("<div class='card-header-gold'>宽基 ETF 智能优选</div>", unsafe_allow_html=True)
                 st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
                 grade = r2_grade(corr["r2"])
-                wx_text += f"🎯 宽基ETF优选\n最优匹配：{best_etf['name']}（{best_etf['code']}）\nR² = {corr['r2']:.3f}（{grade['label']}）\n\n"
+                wx_text += f"🎯 宽基ETF优选（注：该细分行业暂无直接对口ETF，已降级）\n最优匹配：{best_etf['name']}（{best_etf['code']}）\nR² = {corr['r2']:.3f}（{grade['label']}）\n\n"
                 st.success(f"✅ 最优匹配：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）")
 
             if specific_actions:
