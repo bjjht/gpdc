@@ -6,6 +6,7 @@ from datetime import datetime, date, timedelta
 import time
 import json
 import re
+import difflib
 import requests
 import concurrent.futures
 from requests.exceptions import ConnectionError, Timeout
@@ -205,78 +206,58 @@ def fetch_etf_realtime(etf_code: str) -> dict:
     except Exception: return {}
 
 # ============================================================
-# 🌟 终极行业匹配：核心词提取 + 全市场模糊搜索
+# 🌟 终极行业匹配：三级智能联想算法
 # ============================================================
-
-CORE_KEYWORDS = [
-    # 金融地产
-    "银行", "保险", "证券", "券商", "房地产", "地产", "信托", 
-    # 科技 TMT
-    "半导体", "芯片", "软件", "计算机", "通信", "消费电子", "人工智能", "游戏", "传媒", "影视", "安防", "光电子", "面板",
-    # 大消费
-    "白酒", "啤酒", "食品", "饮料", "家电", "旅游", "酒店", "养殖", "猪肉", "农业", "种业", "商业", "零售", "服装", "美容", "护理",
-    # 医药生物
-    "医药", "医疗", "生物", "制药", "中药", "器械",
-    # 新能源与制造
-    "新能源", "光伏", "锂电", "电池", "电源", "汽车", "军工", "航空", "航天", "船舶", "机械", "自动化", "电力", "电网",
-    # 周期与化工
-    "煤炭", "石油", "化工", "化学", "有色", "金属", "贵金属", "黄金", "钢铁", "建材", "水泥", "环保"
-]
 
 @st.cache_data(ttl=3600)
 def find_industry_etf(stock_name: str, industry_name: str):
-    """
-    匹配逻辑：
-    1. 提取行业和股票名称中的“核心词”（如：半导体及元件 -> 半导体，光伏设备 -> 光伏）
-    2. 去全市场 ETF 库中模糊搜索包含该核心词的 ETF
-    """
-    clean_ind = re.sub(r'[^\u4e00-\u9fa5]', '', industry_name)
-    clean_name = re.sub(r'[^\u4e00-\u9fa5]', '', stock_name)
+    try:
+        etf_df = ak.fund_etf_spot_em()
+    except Exception:
+        return None
     
-    matched_keyword = None
-    # 1. 尝试从行业名中提取核心词
-    for kw in CORE_KEYWORDS:
-        if kw in clean_ind:
-            matched_keyword = kw
-            break
-            
-    # 2. 如果行业名没匹配到，尝试从股票名称中提取（比如买的是“隆基绿能”，名字里没光伏，但行业是“光伏设备”）
-    if not matched_keyword:
-        for kw in CORE_KEYWORDS:
-            if kw in clean_name:
-                matched_keyword = kw
-                break
+    if etf_df is None or etf_df.empty:
+        return None
 
-    # 3. 去全市场找对应的 ETF
-    if matched_keyword:
-        try:
-            etf_df = ak.fund_etf_spot_em()
-            # 排除债基和宽基
-            mask = ~etf_df["名称"].str.contains("债|货币|国债|短融|城投|转债|标普|纳斯达克|日经|恒生|300|500|1000|50|创业板|科创")
-            etf_df = etf_df[mask]
-            
-            matched = etf_df[etf_df["名称"].str.contains(matched_keyword)]
-            if not matched.empty:
-                # 取规模最大或名字最短的，通常是行业龙头ETF
-                matched = matched.sort_values(by="名称", key=lambda x: x.str.len())
-                return {"code": matched.iloc[0]["代码"], "name": matched.iloc[0]["名称"], "source": f"核心词提取 ({matched_keyword})"}
-        except Exception:
-            pass
+    # 过滤掉债券、货币、跨境、纯宽基等不相关的 ETF
+    mask = ~etf_df["名称"].str.contains("债|货币|国债|短融|城投|转债|标普|纳斯达克|日经|恒生|300|500|1000|50|创业板|科创|A50|A500")
+    etf_df = etf_df[mask]
+    
+    if etf_df.empty:
+        return None
 
-    # 4. 如果核心词搜索失败，再尝试直接拿清洗后的行业名去全市场硬搜
+    clean_ind = re.sub(r'[^\u4e00-\u9fa5]', '', industry_name).replace("行业", "").replace("设备", "").replace("服务", "")
+    clean_name = re.sub(r'[^\u4e00-\u9fa5]', '', stock_name)
+
+    # 【第一级】：直接包含匹配（比如行业叫"证券"，ETF叫"券商ETF"或"证券ETF"）
+    if clean_ind:
+        direct_match = etf_df[etf_df["名称"].str.contains(clean_ind)]
+        if not direct_match.empty:
+            # 取名字最短的，通常是最核心的行业 ETF
+            direct_match = direct_match.sort_values(by="名称", key=lambda x: x.str.len())
+            return {"code": direct_match.iloc[0]["代码"], "name": direct_match.iloc[0]["名称"], "source": f"精确包含 ({clean_ind})"}
+
+    # 【第二级】：N-gram 拆解匹配（比如行业叫"半导体及元件"，拆出"半导"、"导体"、"元件"去搜）
     if len(clean_ind) >= 2:
-        try:
-            etf_df = ak.fund_etf_spot_em()
-            mask = ~etf_df["名称"].str.contains("债|货币|国债|短融|城投|转债|标普|纳斯达克|日经|恒生|300|500|1000|50|创业板|科创")
-            etf_df = etf_df[mask]
-            # 尝试拆分行业名匹配（如 IT服务 -> 服务/IT）
-            for sub_kw in [clean_ind, clean_ind[:2], clean_ind[-2:]]:
-                if len(sub_kw) < 2: continue
-                matched = etf_df[etf_df["名称"].str.contains(sub_kw)]
-                if not matched.empty:
-                    return {"code": matched.iloc[0]["代码"], "name": matched.iloc[0]["名称"], "source": f"全市场模糊搜索 ({sub_kw})"}
-        except Exception:
-            pass
+        ngrams = [clean_ind[i:i+2] for i in range(len(clean_ind)-1)]
+        for ng in ngrams:
+            match = etf_df[etf_df["名称"].str.contains(ng)]
+            if not match.empty:
+                match = match.sort_values(by="名称", key=lambda x: x.str.len())
+                return {"code": match.iloc[0]["代码"], "name": match.iloc[0]["名称"], "source": f"短语拆解 ({ng})"}
+
+    # 【第三级】：模糊相似度匹配（利用 NLP 计算名字相似度）
+    def calc_sim(etf_name):
+        sim1 = difflib.SequenceMatcher(None, clean_ind, etf_name).ratio()
+        sim2 = difflib.SequenceMatcher(None, clean_name, etf_name).ratio()
+        return max(sim1, sim2)
+
+    etf_df["相似度"] = etf_df["名称"].apply(calc_sim)
+    best_match = etf_df.sort_values(by="相似度", ascending=False).iloc[0]
+    
+    # 如果相似度还不错，就采用
+    if best_match["相似度"] > 0.25:
+        return {"code": best_match["代码"], "name": best_match["名称"], "source": f"智能联想 (相似度{best_match['相似度']:.2f})"}
 
     return None
 
@@ -729,7 +710,7 @@ if st.button("🚀 开始分析"):
                 corr = calc_correlation_r2(stock_df, multi["best_df"], window=60)
                 best_etf = matched_industry
                 etf_source = multi["best_source"]
-                compare_results = [{"ETF代码": best_etf["code"], "ETF名称": best_etf["name"], "匹配方式": best_etf["source"], "R²": corr["r2"] if corr["r2"] else 0}]
+                compare_results = [{"ETF代码": best_etf["code"], "ETF名称": best_etf["name"], "匹配逻辑": best_etf["source"], "R²": corr["r2"] if corr["r2"] else 0}]
                 is_industry_etf = True
                 etf_rt = fetch_etf_realtime(best_etf["code"])
                 etf_price = etf_rt.get("price")
@@ -782,7 +763,7 @@ if st.button("🚀 开始分析"):
                 st.markdown("<div class='card-header-gold'>动态行业 ETF 匹配</div>", unsafe_allow_html=True)
                 st.dataframe(pd.DataFrame(compare_results), use_container_width=True, hide_index=True)
                 grade = r2_grade(corr["r2"])
-                wx_text += f"🎯 行业ETF匹配\n匹配标的：{best_etf['name']}（{best_etf['code']}）\nR² = {corr['r2']:.3f}（{grade['label']}）\n\n"
+                wx_text += f"🎯 行业ETF匹配\n匹配标的：{best_etf['name']}（{best_etf['code']}）\n匹配逻辑：{best_etf['source']}\nR² = {corr['r2']:.3f}（{grade['label']}）\n\n"
                 if grade["label"] in ["强匹配", "中等匹配"]:
                     st.success(f"✅ 匹配结果：**{best_etf['name']}（{best_etf['code']}）**，R² = {corr['r2']:.3f}（{grade['label']}）—— 适合作为行业对冲工具。")
                 else:
